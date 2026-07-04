@@ -5,11 +5,17 @@ import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.yourname.githubmanager.ui.components.FileNode
-import com.yourname.githubmanager.data.zip.ZipExtractor
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkInfo
+import androidx.work.WorkManager
+import androidx.work.workDataOf
+import com.yourname.githubmanager.data.filesystem.ZipExtractor
+import com.yourname.githubmanager.data.filesystem.persistUriPermission
+import com.yourname.githubmanager.domain.FileNode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -68,19 +74,48 @@ class MainWorkspaceViewModel : ViewModel() {
     }
 
     /**
-     * Triggers extraction of a zip archive and builds the file tree on success.
+     * Triggers extraction of a zip archive via WorkManager and builds the file tree on success.
      */
     private fun extractZip(uri: Uri, context: Context) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isExtracting = true, errorMessage = null)
             try {
-                val extractor = ZipExtractor() // Assumes default constructor; adjust if needed
-                val extractedRootUri = extractor.extract(context, uri) // Returns the SAF tree URI of extracted folder
-                buildTreeFromFolder(extractedRootUri, context)
+                val destDir = File(context.filesDir, "extracted_${System.currentTimeMillis()}").apply { mkdirs() }
+                val workRequest = OneTimeWorkRequestBuilder<ZipExtractor>()
+                    .setInputData(
+                        workDataOf(
+                            ZipExtractor.KEY_ZIP_URI_PATH to uri.toString(),
+                            ZipExtractor.KEY_DEST_DIR_PATH to destDir.absolutePath
+                        )
+                    )
+                    .build()
+                WorkManager.getInstance(context).enqueue(workRequest)
+
+                val workInfo = WorkManager.getInstance(context)
+                    .getWorkInfoByIdFlow(workRequest.id)
+                    .first { it.state.isFinished }
+
+                if (workInfo.state == WorkInfo.State.SUCCEEDED) {
+                    val extractedUriStr = workInfo.outputData.getString(ZipExtractor.KEY_EXTRACTED_FOLDER_URI)
+                    if (extractedUriStr != null) {
+                        buildTreeFromFolder(Uri.parse(extractedUriStr), context)
+                    } else {
+                        _uiState.value = _uiState.value.copy(
+                            isExtracting = false,
+                            errorMessage = "Extraction succeeded but no output URI found."
+                        )
+                    }
+                } else {
+                    val errorMsg = workInfo.outputData.getString(ZipExtractor.KEY_ERROR_MESSAGE)
+                    _uiState.value = _uiState.value.copy(
+                        isExtracting = false,
+                        errorMessage = errorMsg ?: "Extraction failed."
+                    )
+                }
             } catch (e: Exception) {
                 _uiState.value = _uiState.value.copy(
                     isExtracting = false,
-                    errorMessage = "Extraction failed: ${e.localizedMessage}"
+                    errorMessage = "Extraction error: ${e.localizedMessage}"
                 )
             }
         }

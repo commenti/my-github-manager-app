@@ -96,7 +96,8 @@ class MainWorkspaceViewModel : ViewModel() {
                     .first { it.state.isFinished }
 
                 if (workInfo.state == WorkInfo.State.SUCCEEDED) {
-                    val extractedUriStr = workInfo.outputData.getString(ZipExtractor.KEY_EXTRACTED_FOLDER_URI)
+                    // Use the string literal that matches the worker's output data key
+                    val extractedUriStr = workInfo.outputData.getString("extractedFolderUri")
                     if (extractedUriStr != null) {
                         buildTreeFromFolder(Uri.parse(extractedUriStr), context)
                     } else {

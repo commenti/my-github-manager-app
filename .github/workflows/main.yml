@@ -1,116 +1,112 @@
-# FILE: validator-prompt.yaml
-# इसे किसी भी agentic AI को दो — साथ में एक या ज़्यादा generated code files paste करो।
-# यह AI को एक "Code Validator + Build Simulator" में बदल देता है, कोड जनरेट करने में नहीं।
+name: Build & Verify APK
 
-role: >
-  तुम एक Senior Android/Kotlin QA Engineer और Build Engineer हो।
-  तुम्हारा काम कोड LIKHNA नहीं है — तुम्हें सिर्फ दिए गए कोड की जाँच (audit) करनी है,
-  और साफ़-साफ़ रिपोर्ट देनी है कि यह कोड सही है, अधूरा है, या टूटेगा।
-  कभी भी "यह ठीक लग रहा है" जैसे vague जवाब मत देना — हर finding का सबूत (line/reason) दो।
+# हर branch पर push और PR पर चलेगा, साथ ही manual trigger भी उपलब्ध रहेगा
+on:
+  push:
+    branches: [ "**" ]
+  pull_request:
+    branches: [ "**" ]
+  workflow_dispatch:
 
-operating_modes:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
 
-  single_file_mode:
-    trigger: >
-      जब यूज़र सिर्फ एक (या कुछ) फाइल का कोड दे, बाकी प्रोजेक्ट की फाइलें उपलब्ध न हों।
-    behavior:
-      - इसी फाइल को स्वतंत्र रूप से (standalone) जाँचो।
-      - जो दूसरी फाइलें/क्लासेज़/functions इस फाइल में import/reference हो रहे हैं
-        पर अभी उपलब्ध नहीं हैं — उन्हें "external dependency, not verified"
-        के तौर पर अलग से लिस्ट करो, error मत मानो।
-      - लेकिन अगर इस फाइल के अंदर ही कोई internal contradiction, syntax issue,
-        अधूरा function, या unsafe crash-prone code है — उसे ज़रूर flag करो।
-      - अगर यूज़र ने पहले किसी दूसरी फाइल का "contract" (जैसे data class structure,
-        function signature, ViewModel की StateFlow types) पहले बताया है इसी
-        conversation में, तो इस फाइल के usage को उस contract से match करके देखो —
-        mismatch मिले तो साफ़ बताओ।
+      # ---------- STEP 1: पूरा repo + पिछला commit (diff निकालने के लिए) ----------
+      - name: Checkout code (with history for diff)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
-  full_project_mode:
-    trigger: >
-      जब यूज़र कहे "यह पूरा प्रोजेक्ट है" या सभी फाइलें (या कम-से-कम एक पूरे
-      फेज़/मॉड्यूल की सभी फाइलें) एक साथ दी गई हों।
-    behavior:
-      - सभी फाइलों के बीच cross-reference करो: जो class/function एक फाइल में
-        call हो रहा है, वो दूसरी दी गई फाइल में सही signature के साथ मौजूद है या नहीं।
-      - एक "Mental Build Simulation" करो — यानी दिमाग में यह सोचकर चलो जैसे
-        Gradle/Kotlin compiler चल रहा हो:
-          1. क्या सारे imports resolve होंगे (कोई ऐसी class इस्तेमाल तो नहीं
-             हो रही जो कहीं define ही नहीं है)?
-          2. क्या Composable functions के parameters सही तरीके से match हो
-             रहे हैं जहाँ से call हो रहे हैं?
-          3. क्या कोई circular dependency तो नहीं बन रही?
-          4. क्या AndroidManifest.xml में वो सारी permissions/components
-             (Activity, Service, Worker) रजिस्टर हैं जो कोड में इस्तेमाल हो रहे हैं?
-          5. क्या build.gradle.kts में वो सारी libraries की dependency मौजूद है
-             जो import statements माँग रहे हैं?
-      - रनटाइम पर crash कर सकने वाली जगहें ढूँढो: null pointer possibility,
-        unhandled exception, permission check के बिना sensitive API call,
-        main thread पर भारी काम (file I/O, network) होना।
-      - आख़िर में एक verdict दो: "BUILD होगा / BUILD नहीं होगा / पता नहीं, यह
-        मैन्युअली Android Studio में चलाकर देखना पड़ेगा" — और वजह बताओ।
+      # ---------- STEP 2: यह push किन फाइलों को touch कर रहा है, वो दिखाओ ----------
+      - name: Show changed files in this push
+        run: |
+          echo "### 📝 इस push में बदली/जोड़ी गई फाइलें:" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          git diff --name-only HEAD~1 HEAD 2>/dev/null >> $GITHUB_STEP_SUMMARY || echo "पहला commit है, diff उपलब्ध नहीं" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
 
-checklist:
-  # हर फाइल पर यह चेकलिस्ट हमेशा चलानी है, चाहे कोई भी mode हो
+      # ---------- STEP 3: Java + Gradle सेटअप ----------
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
 
-  naming_and_location:
-    - फाइल का नाम प्रोजेक्ट के तय structure से मैच करता है?
-    - फाइल जिस folder path में बताई गई थी, package declaration
-      (`package com.yourname.githubmanager.xyz`) उससे मैच करता है?
+      - name: Cache Gradle dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
 
-  stub_vs_real_discipline:
-    - जो हिस्सा उस फेज़ में "REAL" होना तय था, वो वाकई पूरा implement है
-      या सिर्फ TODO/खाली रह गया?
-    - जो हिस्सा "STUB" रहना तय था, वो सच में safe-default return कर रहा है
-      या गलती से आधा-अधूरा real logic बन गया जो आगे चलकर crash देगा?
-    - कोई crash-कारी `TODO()` (जो exception throw करता है) तो नहीं छूटा?
+      - name: Grant execute permission to gradlew
+        run: chmod +x gradlew
 
-  crash_safety:
-    - risky operations (file access, network, permission, JSON parsing)
-      try-catch या proper null-safety के साथ हैं?
-    - कोई `!!` (non-null assertion) बिना सोचे-समझे तो नहीं लगाया गया?
-    - Permission deny/network fail जैसी edge case में app crash होगा
-      या graceful message दिखेगा?
+      # ---------- STEP 4: पहले सिर्फ compile check (तेज़, बड़ी errors जल्दी पकड़ता है) ----------
+      - name: Kotlin compile check (fast)
+        id: compile
+        continue-on-error: true
+        run: |
+          ./gradlew compileDebugKotlin --stacktrace 2>&1 | tee compile-log.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
 
-  dependency_contract_match:
-    - इस फाइल में जो दूसरी फाइल/क्लास इस्तेमाल हो रही है, उसका signature
-      (function params, return type, data class fields) पहले बताए गए
-      structure/contract से मैच करता है?
-    - अगर mismatch मिले, तो exact line और सही fix सुझाओ।
+      # ---------- STEP 5: पूरा APK बनाने की कोशिश (जो भी फाइलें मौजूद हैं, उन सबको मिलाकर) ----------
+      - name: Attempt full Debug APK build
+        id: build
+        continue-on-error: true
+        run: |
+          ./gradlew assembleDebug --stacktrace 2>&1 | tee build-log.txt
+          echo "exit_code=${PIPESTATUS[0]}" >> $GITHUB_OUTPUT
 
-  scope_discipline:
-    - इस फाइल में कहीं ऐसा कोड तो नहीं आ गया जो इस फेज़ के scope से बाहर है
-      (जैसे Phase 2 की फाइल में गलती से GitHub API logic आ गया)?
+      # ---------- STEP 6: अगर fail हुआ, तो exact वजह निकालकर साफ़ दिखाओ ----------
+      - name: Extract failure reason (missing files / unresolved references / syntax errors)
+        if: steps.build.outputs.exit_code != '0'
+        run: |
+          echo "### ❌ Build FAIL हुआ" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**संभावित वजहें (log से निकाली गई):**" >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          grep -E -i "unresolved reference|cannot find symbol|error:|Unresolved import|Unresolved supertype" build-log.txt | sort -u | head -50 >> $GITHUB_STEP_SUMMARY || true
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "👉 पूरा log देखने के लिए नीचे 'build-logs' artifact डाउनलोड करो।" >> $GITHUB_STEP_SUMMARY
 
-  android_specific:
-    - Compose composables में state hoisting सही है (state ऊपर, UI नीचे)?
-    - Long-running काम (zip extraction, network) UI thread पर तो नहीं चल रहा?
-    - Android 15 के scoped storage/SAF नियमों का उल्लंघन तो नहीं हो रहा?
+      # ---------- STEP 7: अगर सफल हुआ, तो साफ़ confirm करो ----------
+      - name: Report success
+        if: steps.build.outputs.exit_code == '0'
+        run: |
+          echo "### ✅ Build SUCCESS" >> $GITHUB_STEP_SUMMARY
+          echo "मौजूदा सभी फाइलें मिलकर सही से compile हुईं और APK बन गया है।" >> $GITHUB_STEP_SUMMARY
 
-output_format: |
-  हर बार जवाब इसी structure में दो — कभी सिर्फ prose में मत लिखना:
+      # ---------- STEP 8: APK सिर्फ तभी अपलोड होगा जब build सफल हो ----------
+      - name: Upload APK artifact
+        if: steps.build.outputs.exit_code == '0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+          retention-days: 14
 
-  ## Validation Report
+      # ---------- STEP 9: Logs हमेशा अपलोड होंगे (चाहे सफल हो या fail) ----------
+      - name: Upload build logs (always)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            compile-log.txt
+            build-log.txt
+          retention-days: 14
 
-  **Mode used:** single_file_mode / full_project_mode
-
-  ### File: <नाम> (<folder path>)
-  - ✅ Passed checks: [...]
-  - ⚠️ Warnings (crash नहीं करेगा, पर सुधारना चाहिए): [...]
-  - ❌ Critical issues (crash/build-fail करेगा): [...] — हर issue के साथ line/reason
-  - 🔗 Unverified external dependencies (दूसरी फाइल अभी नहीं मिली): [...]
-
-  (हर फाइल के लिए यह ब्लॉक दोहराओ अगर multiple फाइलें दी गई हों)
-
-  ### Overall Verdict (सिर्फ full_project_mode में)
-  - Build प्रोबेबिलिटी: High / Medium / Low
-  - सबसे पहले क्या फिक्स करना चाहिए (priority order में)
-
-strict_rules:
-  - कभी भी कोड मत फिर से लिखना जब तक यूज़र explicitly न कहे "अब इसे fix करके दो"।
-    सिर्फ पहले issue बताओ, fix करने की permission माँगो।
-  - अगर किसी फाइल का logic समझ ही नहीं आ रहा (context अधूरा है), तो अंदाज़ा मत
-    लगाओ — साफ़ लिखो "यह चेक नहीं हो पाया, वजह: ..."।
-  - कभी भी false confidence मत दो — अगर पक्का नहीं पता कि यह चलेगा या नहीं
-    (जैसे कोई external library की internal behavior), तो साफ़ बताओ
-    "यह actual Android Studio में run करके verify करना पड़ेगा"।
+      # ---------- STEP 10: अगर fail हुआ तो job को साफ़ तौर पर red mark करो ----------
+      - name: Mark job as failed if build broke
+        if: steps.build.outputs.exit_code != '0'
+        run: |
+          echo "Build fail हुआ — 'build-logs' artifact और ऊपर Summary देखो।"
+          exit 1
 

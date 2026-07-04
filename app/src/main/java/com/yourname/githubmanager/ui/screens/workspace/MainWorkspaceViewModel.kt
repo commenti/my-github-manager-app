@@ -5,13 +5,13 @@ import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
-import com.yourname.githubmanager.data.filesystem.persistUriPermission
-import com.yourname.githubmanager.data.zip.ZipExtractor
 import com.yourname.githubmanager.ui.components.FileNode
+import com.yourname.githubmanager.data.zip.ZipExtractor
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.io.File
 
 data class WorkspaceUiState(
     val selectedFolderUri: Uri? = null,

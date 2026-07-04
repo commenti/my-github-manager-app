@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">GitHub Manager</string>
+
+    <!--
+        AdMob App ID.
+        ⚠️  IMPORTANT — MANUAL STEP REQUIRED BEFORE BUILDING:
+        Replace the value below with your real AdMob App ID from the AdMob console.
+        The placeholder value shown here is Google's official TEST App ID and is
+        safe to use during development; it will NOT generate real revenue.
+        Real App ID format: ca-app-pub-XXXXXXXXXXXXXXXXXX~XXXXXXXXXX
+    -->
+    <string name="admob_app_id" translatable="false">ca-app-pub-3940256099942544~3347511713</string>
+</resources>

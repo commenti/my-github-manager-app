@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+        Base application theme.
+        The Compose theme (GitHubManagerTheme) takes over the UI rendering.
+        This XML theme is needed only by the system window/status bar.
+    -->
+    <style name="Theme.GitHubManager" parent="android:Theme.Material.Light.NoActionBar" />
+</resources>

@@ -15,7 +15,7 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.yourname.githubmanager.data.filesystem.rememberSafHelper
-import com.yourname.githubmanager.ui.components.FileNode
+import com.yourname.githubmanager.domain.FileNode
 import com.yourname.githubmanager.ui.components.FileTreeItem
 import kotlinx.coroutines.launch
 

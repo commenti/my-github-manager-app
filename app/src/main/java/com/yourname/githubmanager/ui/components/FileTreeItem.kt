@@ -1,4 +1,4 @@
-package com.example.app.ui.components
+package com.yourname.githubmanager.ui.components
 
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -13,15 +13,7 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
-
-/**
- * A simple model for a file tree node. Replace or extend as needed.
- */
-data class FileNode(
-    val name: String,
-    val isFolder: Boolean,
-    val children: List<FileNode> = emptyList()
-)
+import com.yourname.githubmanager.domain.FileNode
 
 /**
  * A recursive Composable that displays a single file/folder node.

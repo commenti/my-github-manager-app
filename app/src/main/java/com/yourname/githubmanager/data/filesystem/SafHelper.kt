@@ -3,6 +3,7 @@ package com.yourname.githubmanager.data.filesystem
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.OpenableColumns
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.SnackbarHostState
@@ -108,4 +109,48 @@ fun persistUriPermission(context: Context, uri: Uri) {
         uri,
         Intent.FLAG_GRANT_READ_URI_PERMISSION
     )
+}
+
+/**
+ * Resolves the human-readable display name for a SAF [Uri] (works for both
+ * single-document Uris from OpenDocument and tree-child Uris from OpenDocumentTree).
+ *
+ * BUG FIX (name showing full path/URI instead of filename):
+ * Previously call sites used `uri.lastPathSegment` or `uri.toString()` directly,
+ * which for content:// Uris returns something like
+ * "primary:Download/Service_Worker/Service_Worker.zip" instead of just
+ * "Service_Worker.zip". The correct approach is to query the
+ * OpenableColumns.DISPLAY_NAME column via the ContentResolver, falling back to
+ * the last path segment only if the query fails or returns nothing.
+ */
+fun getDisplayName(context: Context, uri: Uri): String {
+    var name: String? = null
+
+    if (uri.scheme == "content") {
+        try {
+            context.contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null
+            )?.use { cursor ->
+                if (cursor.moveToFirst()) {
+                    val index = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                    if (index >= 0) {
+                        name = cursor.getString(index)
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            // Fall through to the lastPathSegment fallback below.
+        }
+    }
+
+    if (name.isNullOrBlank()) {
+        // Fallback: strip any directory-like prefix (e.g. "primary:Download/foo.zip" -> "foo.zip")
+        name = uri.lastPathSegment?.substringAfterLast('/')
+    }
+
+    return name ?: "Unknown"
 }

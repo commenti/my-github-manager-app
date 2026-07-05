@@ -8,4 +8,5 @@ package com.yourname.githubmanager.navigation
  */
 sealed class Screen(val route: String) {
     object Workspace : Screen("workspace")
+    object Settings : Screen("settings")
 }

@@ -1,8 +1,9 @@
-// File: app/build.gradle.kts
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
+    // ✨ नया plugin (serialization) – सिर्फ यह एक line जोड़ी
+    alias(libs.plugins.kotlin.serialization)
 }
 
 android {
@@ -75,6 +76,9 @@ dependencies {
     implementation(libs.play.services.ads)
 
     implementation(libs.androidx.documentfile)
+
+    // ✨ नई dependency – serialization runtime
+    implementation(libs.kotlinx.serialization.json)
 
     debugImplementation(libs.androidx.ui.tooling)
 }

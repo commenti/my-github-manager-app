@@ -16,18 +16,17 @@ fun AppNavigator() {
         startDestination = Screen.Workspace.route
     ) {
         composable(route = Screen.Workspace.route) {
-            MainWorkspaceScreen()
+            MainWorkspaceScreen(
+                onSettingsClick = {
+                    navController.navigate(Screen.Settings.route)
+                }
+            )
         }
 
-        composable(route = Screen.Workspace.route) {
-    MainWorkspaceScreen(
-        onSettingsClick = {
-            navController.navigate(Screen.Settings.route)
+        composable(route = Screen.Settings.route) {
+            SettingsScreen(
+                onBackClick = { navController.popBackStack() }
+            )
         }
-    )
-        }
-
-        // Future routes here
-        // composable(route = Screen.Splash.route) { SplashScreen(navController) }
     }
 }

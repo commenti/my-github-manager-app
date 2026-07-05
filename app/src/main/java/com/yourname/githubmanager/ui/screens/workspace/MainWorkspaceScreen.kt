@@ -32,7 +32,7 @@ fun MainWorkspaceScreen() {
     // SAF helper – launches system pickers and feeds URIs to the ViewModel
     val safHelper = rememberSafHelper(
         snackbarHostState = snackbarHostState,
-        onFilePicked = { uri -> viewModel.onFilePicked(uri) },
+        onFilePicked = { uri -> viewModel.onFilePicked(uri, context) },
         onFolderPicked = { uri -> viewModel.onFolderPicked(uri, context) }
     )
 

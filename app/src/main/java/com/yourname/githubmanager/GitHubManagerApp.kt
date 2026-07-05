@@ -4,6 +4,7 @@ package com.yourname.githubmanager
 import android.app.Application
 import android.util.Log
 import com.google.android.gms.ads.MobileAds
+import com.yourname.githubmanager.utils.CrashHandler
 import com.google.android.gms.ads.initialization.InitializationStatus
 
 /**
@@ -20,6 +21,7 @@ class GitHubManagerApp : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        CrashHandler.init(this)
         initAdMob()
     }
 

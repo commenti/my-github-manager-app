@@ -20,15 +20,21 @@ fun AppNavigator() {
     val navController = rememberNavController()
 
     NavHost(
-        navController = navController,
-        startDestination = Screen.Workspace.route
-    ) {
-        composable(route = Screen.Workspace.route) {
-            MainWorkspaceScreen()
-        }
-
-        // ── Future routes ─────────────────────────────────────────────
-        // composable(route = Screen.Splash.route)   { SplashScreen(navController) }
-        // composable(route = Screen.Settings.route) { SettingsScreen(navController) }
+    navController = navController,
+    startDestination = Screen.Workspace.route
+) {
+    composable(route = Screen.Workspace.route) {
+        MainWorkspaceScreen()
     }
-}
+
+    composable(route = Screen.Settings.route) {
+        SettingsScreen(
+            onBackClick = {
+                navController.popBackStack()
+            }
+        )
+    }
+
+    // ── Future routes ─────────────────────────────────────────────
+    // composable(route = Screen.Splash.route) { SplashScreen(navController) }
+    }

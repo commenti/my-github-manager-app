@@ -1,19 +1,15 @@
-// File: app/src/main/java/com/yourname/githubmanager/MainActivity.kt
 package com.yourname.githubmanager
 
+import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.provider.MediaStore
+import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import com.yourname.githubmanager.navigation.AppNavigator
-import com.yourname.githubmanager.ui.theme.GitHubManagerTheme
-
-import android.content.ContentValues
-import android.content.Intent
-import android.net.Uri
-import android.os.Environment
-import android.provider.MediaStore
-import android.util.Log
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -29,27 +25,21 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
-import android.widget.Toast
+import com.yourname.githubmanager.navigation.AppNavigator
+import com.yourname.githubmanager.ui.theme.GitHubManagerTheme
 import java.io.BufferedReader
 import java.io.InputStreamReader
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
-/**
- * Single Activity that hosts the entire Compose UI.
- * Sets up edge-to-edge display and delegates all navigation
- * to [AppNavigator].
- */
 class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
+
         setContent {
             val context = LocalContext.current
             var showCrashDialog by remember { mutableStateOf(false) }
@@ -59,8 +49,7 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(Unit) {
                 val crashLogs = findCrashLogsInDownloads(context)
                 if (crashLogs.isNotEmpty()) {
-                    // Get the most recent crash log
-                    val latestCrashLog = crashLogs.maxByOrNull { it.first } // Pair<Long, Uri>
+                    val latestCrashLog = crashLogs.maxByOrNull { it.first }
                     latestCrashLog?.let {
                         crashLogUri = it.second
                         crashLogContent = readCrashLogContent(context, it.second)
@@ -93,6 +82,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    // FIX 1: Use non‑null cursor and explicit lambda type
     private fun findCrashLogsInDownloads(context: Context): List<Pair<Long, Uri>> {
         val crashLogs = mutableListOf<Pair<Long, Uri>>()
         val collection = MediaStore.Downloads.EXTERNAL_CONTENT_URI
@@ -107,24 +97,33 @@ class MainActivity : ComponentActivity() {
         val selectionArgs = arrayOf("crash_log_%.txt")
         val sortOrder = "${MediaStore.MediaColumns.DATE_ADDED} DESC"
 
-        context.contentResolver.query(
-            collection,
-            projection,
-            selection,
-            selectionArgs,
-            sortOrder
-        )?.use {
-            val idColumn = it.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
-            val dateAddedColumn = it.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED)
+        return try {
+            val cursor = context.contentResolver.query(
+                collection,
+                projection,
+                selection,
+                selectionArgs,
+                sortOrder
+            )
+            // Use let to get a non‑null Cursor, then use use on it
+            cursor?.let { nonNullCursor ->
+                nonNullCursor.use { c ->  // c is non‑null Cursor
+                    val idColumn = c.getColumnIndexOrThrow(MediaStore.MediaColumns._ID)
+                    val dateAddedColumn = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_ADDED)
 
-            while (it.moveToNext()) {
-                val id = it.getLong(idColumn)
-                val dateAdded = it.getLong(dateAddedColumn)
-                val contentUri = Uri.withAppendedPath(collection, id.toString())
-                crashLogs.add(Pair(dateAdded, contentUri))
+                    while (c.moveToNext()) {
+                        val id = c.getLong(idColumn)
+                        val dateAdded = c.getLong(dateAddedColumn)
+                        val contentUri = Uri.withAppendedPath(collection, id.toString())
+                        crashLogs.add(Pair(dateAdded, contentUri))
+                    }
+                }
             }
+            crashLogs
+        } catch (e: Exception) {
+            Log.e("MainActivity", "Error querying crash logs: ", e)
+            emptyList()
         }
-        return crashLogs
     }
 
     private fun readCrashLogContent(context: Context, uri: Uri): String? {
@@ -163,6 +162,8 @@ class MainActivity : ComponentActivity() {
     @Composable
     fun CrashLogDialog(crashLog: String, onDismiss: () -> Unit, onShare: () -> Unit) {
         val context = LocalContext.current
+        val clipboardManager = LocalClipboardManager.current
+
         AlertDialog(
             onDismissRequest = onDismiss,
             title = { Text("Last Crash Log") },
@@ -175,20 +176,21 @@ class MainActivity : ComponentActivity() {
                             .fillMaxWidth()
                             .padding(bottom = 8.dp)
                     )
+                    // FIX 2: Add Copy button inside the text column (no neutralButton)
+                    TextButton(
+                        onClick = {
+                            clipboardManager.setText(AnnotatedString(crashLog))
+                            Toast.makeText(context, "Crash log copied to clipboard", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.padding(top = 8.dp)
+                    ) {
+                        Text("Copy to Clipboard")
+                    }
                 }
             },
             confirmButton = {
                 TextButton(onClick = onShare) {
                     Text("Share")
-                }
-            },
-            neutralButton = {
-                val clipboardManager = LocalClipboardManager.current
-                TextButton(onClick = {
-                    clipboardManager.setText(AnnotatedString(crashLog))
-                    Toast.makeText(context, "Crash log copied to clipboard", Toast.LENGTH_SHORT).show()
-                }) {
-                    Text("Copy")
                 }
             },
             dismissButton = {
@@ -197,10 +199,5 @@ class MainActivity : ComponentActivity() {
                 }
             }
         )
-    }
-            GitHubManagerTheme {
-                AppNavigator()
-            }
-        }
     }
 }

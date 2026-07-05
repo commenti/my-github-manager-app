@@ -6,6 +6,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.CreateNewFolder
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -21,7 +22,9 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun MainWorkspaceScreen() {
+fun MainWorkspaceScreen(
+    onSettingsClick: () -> Unit = {}
+) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
@@ -46,9 +49,16 @@ fun MainWorkspaceScreen() {
 
     Scaffold(
         topBar = {
-            // Existing Phase 1 TopBar – unchanged
             TopAppBar(
-                title = { Text("Workspace") }
+                title = { Text("Workspace") },
+                actions = {
+                    IconButton(onClick = onSettingsClick) {
+                        Icon(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = "Settings"
+                        )
+                    }
+                }
             )
         },
         bottomBar = {

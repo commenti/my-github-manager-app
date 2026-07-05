@@ -10,6 +10,7 @@ import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.workDataOf
 import com.yourname.githubmanager.data.filesystem.ZipExtractor
+import com.yourname.githubmanager.data.filesystem.getDisplayName
 import com.yourname.githubmanager.data.filesystem.persistUriPermission
 import com.yourname.githubmanager.domain.FileNode
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -33,22 +34,22 @@ class MainWorkspaceViewModel : ViewModel() {
 
     /**
      * Called when the user picks a single file using the file picker.
-     * Builds a simple tree with only that file.
+     *
+     * BUG FIX (zip detection never triggered):
+     * This function previously always built a plain, non-extracted FileNode,
+     * even when the picked file was a .zip archive imported via "Import File".
+     * It now routes through [handleImportedUri], which checks the *real*
+     * display name (case-insensitive) for a ".zip" suffix and, if found,
+     * kicks off extraction instead of listing the zip itself.
      */
-    fun onFilePicked(uri: Uri) {
-        _uiState.value = _uiState.value.copy(
-            selectedFolderUri = null,
-            fileTree = FileNode(
-                name = uri.lastPathSegment ?: "UnknownFile",
-                path = uri.toString(),
-                isFolder = false
-            )
-        )
+    fun onFilePicked(uri: Uri, context: Context) {
+        persistUriPermission(context, uri)
+        handleImportedUri(uri, context, isFolder = false)
     }
 
     /**
      * Called when the user picks a folder via the folder picker.
-     * If the folder appears to be a zip file, starts extraction; otherwise
+     * If the picked item appears to be a zip file, starts extraction; otherwise
      * builds the file tree directly from the SAF folder.
      */
     fun onFolderPicked(uri: Uri, context: Context) {
@@ -56,11 +57,32 @@ class MainWorkspaceViewModel : ViewModel() {
 
         persistUriPermission(context, uri)
 
-        val fileName = uri.lastPathSegment ?: ""
-        if (fileName.endsWith(".zip", ignoreCase = true)) {
-            extractZip(uri, context)
-        } else {
+        handleImportedUri(uri, context, isFolder = true)
+    }
+
+    /**
+     * Single place where "what do we do with this imported Uri?" is decided.
+     * This is the decision point requested: it resolves the true display name
+     * (via [getDisplayName], fixing Bug 2) and checks its extension
+     * case-insensitively for ".zip" (fixing Bug 1) before branching into
+     * either extraction or the normal file/folder tree build.
+     */
+    private fun handleImportedUri(uri: Uri, context: Context, isFolder: Boolean) {
+        val displayName = getDisplayName(context, uri)
+
+        if (displayName.endsWith(".zip", ignoreCase = true)) {
+            extractZip(uri, context, displayName)
+        } else if (isFolder) {
             buildTreeFromFolder(uri, context)
+        } else {
+            _uiState.value = _uiState.value.copy(
+                selectedFolderUri = null,
+                fileTree = FileNode(
+                    name = displayName,
+                    path = uri.toString(),
+                    isFolder = false
+                )
+            )
         }
     }
 
@@ -73,12 +95,25 @@ class MainWorkspaceViewModel : ViewModel() {
 
     /**
      * Triggers extraction of a zip archive via WorkManager and builds the file tree on success.
+     *
+     * BUG FIX notes:
+     *  - destDir is now named after the zip's real display name (not just "extracted_<time>"),
+     *    which makes it easier to identify in logs/filesystem.
+     *  - On success we now read [ZipExtractor.KEY_EXTRACTED_PATH] (a plain filesystem path
+     *    that ZipExtractor actually outputs) instead of a non-existent "extractedFolderUri"
+     *    key, and we build the tree with [fileToNode] by walking the real java.io.File
+     *    directory on disk — the extracted content lives in app-internal storage, so it is
+     *    a plain File tree, not a SAF DocumentFile tree.
+     *  - On failure, errorMessage is set (never thrown/crashed) so the UI can show a Snackbar.
      */
-    private fun extractZip(uri: Uri, context: Context) {
+    private fun extractZip(uri: Uri, context: Context, zipDisplayName: String) {
         viewModelScope.launch {
             _uiState.value = _uiState.value.copy(isExtracting = true, errorMessage = null)
             try {
-                val destDir = File(context.filesDir, "extracted_${System.currentTimeMillis()}").apply { mkdirs() }
+                val baseName = zipDisplayName
+                    .removeSuffix(".zip")
+                    .ifBlank { "extracted" }
+                val destDir = File(context.filesDir, "${baseName}_${System.currentTimeMillis()}").apply { mkdirs() }
 
                 val workRequest = OneTimeWorkRequestBuilder<ZipExtractor>()
                     .setInputData(
@@ -96,13 +131,18 @@ class MainWorkspaceViewModel : ViewModel() {
                     .first { it?.state?.isFinished == true }
 
                 if (workInfo?.state == WorkInfo.State.SUCCEEDED) {
-                    val extractedUriStr = workInfo.outputData.getString("extractedFolderUri")
-                    if (extractedUriStr != null) {
-                        buildTreeFromFolder(Uri.parse(extractedUriStr), context)
+                    val extractedPath = workInfo.outputData.getString(ZipExtractor.KEY_EXTRACTED_PATH)
+                    if (extractedPath != null) {
+                        val rootNode = fileToNode(File(extractedPath))
+                        _uiState.value = _uiState.value.copy(
+                            isExtracting = false,
+                            fileTree = rootNode,
+                            errorMessage = null
+                        )
                     } else {
                         _uiState.value = _uiState.value.copy(
                             isExtracting = false,
-                            errorMessage = "Extraction succeeded but no output URI found."
+                            errorMessage = "Extraction succeeded but no output path found."
                         )
                     }
                 } else {
@@ -137,6 +177,30 @@ class MainWorkspaceViewModel : ViewModel() {
                 errorMessage = "Failed to read folder: ${e.localizedMessage}"
             )
         }
+    }
+
+    /**
+     * Recursively converts a plain [File] (used for zip-extraction output living in
+     * app-internal storage) into a [FileNode] tree. Unlike [documentFileToNode], this
+     * does not go through SAF since extracted files are regular filesystem files.
+     */
+    private fun fileToNode(file: File): FileNode {
+        val isFolder = file.isDirectory
+        val children = if (isFolder) {
+            file.listFiles()
+                ?.sortedBy { it.name.lowercase() }
+                ?.map { fileToNode(it) }
+                ?: emptyList()
+        } else {
+            emptyList()
+        }
+
+        return FileNode(
+            name = file.name,
+            path = file.absolutePath,
+            isFolder = isFolder,
+            children = children
+        )
     }
 
     /**

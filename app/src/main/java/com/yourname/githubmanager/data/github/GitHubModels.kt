@@ -1,7 +1,8 @@
 // File: app/src/main/java/com/yourname/githubmanager/data/github/GitHubModels.kt
 package com.yourname.githubmanager.data.github
 
-import com.google.gson.annotations.SerializedName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerialName
 
 /**
  * Data-transfer objects for the GitHub "Git Data" REST API — the low-level
@@ -19,14 +20,16 @@ import com.google.gson.annotations.SerializedName
 // POST /repos/{owner}/{repo}/git/blobs
 
 /** One file's raw content, base64-encoded, ready to become a git blob. */
+@Serializable
 data class BlobRequest(
-    @SerializedName("content") val content: String,
-    @SerializedName("encoding") val encoding: String = "base64"
+    @SerialName("content") val content: String,
+    @SerialName("encoding") val encoding: String = "base64"
 )
 
+@Serializable
 data class BlobResponse(
-    @SerializedName("sha") val sha: String,
-    @SerializedName("url") val url: String
+    @SerialName("sha") val sha: String,
+    @SerialName("url") val url: String
 )
 
 // ── Trees ────────────────────────────────────────────────────────────────
@@ -41,11 +44,12 @@ data class BlobResponse(
  *             entries; GitHub builds the directory structure for us from the paths)
  * @param sha  The blob sha returned from a prior BlobResponse
  */
+@Serializable
 data class TreeEntry(
-    @SerializedName("path") val path: String,
-    @SerializedName("mode") val mode: String = "100644",
-    @SerializedName("type") val type: String = "blob",
-    @SerializedName("sha") val sha: String
+    @SerialName("path") val path: String,
+    @SerialName("mode") val mode: String = "100644",
+    @SerialName("type") val type: String = "blob",
+    @SerialName("sha") val sha: String
 )
 
 /**
@@ -57,15 +61,17 @@ data class TreeEntry(
  * @param tree     Only the changed/new file entries — GitHub merges them
  *                 into baseTree automatically.
  */
+@Serializable
 data class TreeRequest(
-    @SerializedName("base_tree") val baseTree: String? = null,
-    @SerializedName("tree") val tree: List<TreeEntry>
+    @SerialName("base_tree") val baseTree: String? = null,
+    @SerialName("tree") val tree: List<TreeEntry>
 )
 
+@Serializable
 data class TreeResponse(
-    @SerializedName("sha") val sha: String,
-    @SerializedName("url") val url: String,
-    @SerializedName("tree") val tree: List<TreeEntry> = emptyList()
+    @SerialName("sha") val sha: String,
+    @SerialName("url") val url: String,
+    @SerialName("tree") val tree: List<TreeEntry> = emptyList()
 )
 
 // ── Commits ──────────────────────────────────────────────────────────────
@@ -76,16 +82,18 @@ data class TreeResponse(
  *                history. For every subsequent commit this must contain
  *                exactly the previous commit's sha, or history will fork.
  */
+@Serializable
 data class CommitRequest(
-    @SerializedName("message") val message: String,
-    @SerializedName("tree") val tree: String,
-    @SerializedName("parents") val parents: List<String> = emptyList()
+    @SerialName("message") val message: String,
+    @SerialName("tree") val tree: String,
+    @SerialName("parents") val parents: List<String> = emptyList()
 )
 
+@Serializable
 data class CommitResponse(
-    @SerializedName("sha") val sha: String,
-    @SerializedName("url") val url: String,
-    @SerializedName("message") val message: String
+    @SerialName("sha") val sha: String,
+    @SerialName("url") val url: String,
+    @SerialName("message") val message: String
 )
 
 // ── Refs ─────────────────────────────────────────────────────────────────
@@ -98,22 +106,25 @@ data class CommitResponse(
  *              safety net that stops us from silently overwriting commits
  *              made outside the app (e.g. from a browser or another device).
  */
+@Serializable
 data class RefUpdateRequest(
-    @SerializedName("sha") val sha: String,
-    @SerializedName("force") val force: Boolean = false
+    @SerialName("sha") val sha: String,
+    @SerialName("force") val force: Boolean = false
 )
 
+@Serializable
 data class RefObject(
-    @SerializedName("sha") val sha: String,
-    @SerializedName("type") val type: String,
-    @SerializedName("url") val url: String
+    @SerialName("sha") val sha: String,
+    @SerialName("type") val type: String,
+    @SerialName("url") val url: String
 )
 
+@Serializable
 data class RefResponse(
-    @SerializedName("ref") val ref: String,
-    @SerializedName("node_id") val nodeId: String? = null,
-    @SerializedName("url") val url: String,
-    @SerializedName("object") val gitObject: RefObject
+    @SerialName("ref") val ref: String,
+    @SerialName("node_id") val nodeId: String? = null,
+    @SerialName("url") val url: String,
+    @SerialName("object") val gitObject: RefObject
 )
 
 // ── Errors ───────────────────────────────────────────────────────────────
@@ -123,8 +134,8 @@ data class RefResponse(
  * Used by GitHubRepository to surface a readable message instead of a raw
  * HTTP status code when a call fails.
  */
+@Serializable
 data class GitHubErrorResponse(
-    @SerializedName("message") val message: String? = null,
-    @SerializedName("documentation_url") val documentationUrl: String? = null
+    @SerialName("message") val message: String? = null,
+    @SerialName("documentation_url") val documentationUrl: String? = null
 )
-

@@ -19,12 +19,12 @@ fun AppNavigator() {
             MainWorkspaceScreen()
         }
 
-        composable(route = Screen.Settings.route) {
-            SettingsScreen(
-                onBackClick = {
-                    navController.popBackStack()
-                }
-            )
+        composable(route = Screen.Workspace.route) {
+    MainWorkspaceScreen(
+        onSettingsClick = {
+            navController.navigate(Screen.Settings.route)
+        }
+    )
         }
 
         // Future routes here

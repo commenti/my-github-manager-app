@@ -5,11 +5,14 @@ import android.content.Context
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
-import com.google.gson.Gson
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import java.security.MessageDigest
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.json.Json
 
 /**
  * Everything the app knows about one local project folder's last
@@ -26,6 +29,7 @@ import java.security.MessageDigest
  *                       hashes against this map is how "Commit Changes"
  *                       finds out what actually changed.
  */
+@Serializable
 data class SyncMetadata(
     val repoOwner: String,
     val repoName: String,
@@ -60,8 +64,6 @@ private val Context.syncDataStore by preferencesDataStore(name = "project_sync_s
  */
 object ProjectSyncStore {
 
-    private val gson = Gson()
-
     /**
      * Preference keys can't safely contain arbitrary characters (folder
      * paths can), so we hash the folder identifier down to a short, safe,
@@ -84,14 +86,14 @@ object ProjectSyncStore {
         val raw = context.syncDataStore.data
             .map { prefs -> prefs[keyFor(folderIdentifier)] }
             .first()
-        return raw?.let { runCatching { gson.fromJson(it, SyncMetadata::class.java) }.getOrNull() }
+        return raw?.let { runCatching { Json.decodeFromString<SyncMetadata>(it) }.getOrNull() }
     }
 
     /** Observes this folder's sync state, emitting null if never synced. */
     fun getSyncMetadataFlow(context: Context, folderIdentifier: String): Flow<SyncMetadata?> {
         return context.syncDataStore.data.map { prefs ->
             prefs[keyFor(folderIdentifier)]?.let { json ->
-                runCatching { gson.fromJson(json, SyncMetadata::class.java) }.getOrNull()
+                runCatching { Json.decodeFromString<SyncMetadata>(json) }.getOrNull()
             }
         }
     }
@@ -108,7 +110,7 @@ object ProjectSyncStore {
         folderIdentifier: String,
         metadata: SyncMetadata
     ) {
-        val json = gson.toJson(metadata)
+        val json = Json.encodeToString(metadata)
         context.syncDataStore.edit { prefs ->
             prefs[keyFor(folderIdentifier)] = json
         }
@@ -126,4 +128,3 @@ object ProjectSyncStore {
         }
     }
 }
-

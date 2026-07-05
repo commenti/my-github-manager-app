@@ -40,8 +40,8 @@ class MainWorkspaceViewModel : ViewModel() {
             selectedFolderUri = null,
             fileTree = FileNode(
                 name = uri.lastPathSegment ?: "UnknownFile",
-                isFolder = false,
-                filePath = uri.toString()
+                filePath = uri.toString(),
+                isFolder = false
             )
         )
     }
@@ -54,10 +54,8 @@ class MainWorkspaceViewModel : ViewModel() {
     fun onFolderPicked(uri: Uri, context: Context) {
         _uiState.value = _uiState.value.copy(selectedFolderUri = uri)
 
-        // Persist the permission (in addition to what SafHelper already did)
         persistUriPermission(context, uri)
 
-        // Determine if this is a zip file by checking the file name extension
         val fileName = uri.lastPathSegment ?: ""
         if (fileName.endsWith(".zip", ignoreCase = true)) {
             extractZip(uri, context)
@@ -81,6 +79,7 @@ class MainWorkspaceViewModel : ViewModel() {
             _uiState.value = _uiState.value.copy(isExtracting = true, errorMessage = null)
             try {
                 val destDir = File(context.filesDir, "extracted_${System.currentTimeMillis()}").apply { mkdirs() }
+
                 val workRequest = OneTimeWorkRequestBuilder<ZipExtractor>()
                     .setInputData(
                         workDataOf(
@@ -89,14 +88,14 @@ class MainWorkspaceViewModel : ViewModel() {
                         )
                     )
                     .build()
+
                 WorkManager.getInstance(context).enqueue(workRequest)
 
                 val workInfo = WorkManager.getInstance(context)
                     .getWorkInfoByIdFlow(workRequest.id)
-                    .first { it.state.isFinished }
+                    .first { it?.state?.isFinished == true }
 
-                if (workInfo.state == WorkInfo.State.SUCCEEDED) {
-                    // Use the string literal that matches the worker's output data key
+                if (workInfo?.state == WorkInfo.State.SUCCEEDED) {
                     val extractedUriStr = workInfo.outputData.getString("extractedFolderUri")
                     if (extractedUriStr != null) {
                         buildTreeFromFolder(Uri.parse(extractedUriStr), context)
@@ -107,7 +106,7 @@ class MainWorkspaceViewModel : ViewModel() {
                         )
                     }
                 } else {
-                    val errorMsg = workInfo.outputData.getString(ZipExtractor.KEY_ERROR_MESSAGE)
+                    val errorMsg = workInfo?.outputData?.getString(ZipExtractor.KEY_ERROR_MESSAGE)
                     _uiState.value = _uiState.value.copy(
                         isExtracting = false,
                         errorMessage = errorMsg ?: "Extraction failed."
@@ -145,6 +144,7 @@ class MainWorkspaceViewModel : ViewModel() {
      */
     private fun documentFileToNode(doc: DocumentFile?): FileNode? {
         if (doc == null) return null
+
         val name = doc.name ?: "Unknown"
         val isFolder = doc.isDirectory
         val children = if (isFolder) {
@@ -152,11 +152,12 @@ class MainWorkspaceViewModel : ViewModel() {
         } else {
             emptyList()
         }
+
         return FileNode(
             name = name,
+            filePath = doc.uri.toString(),
             isFolder = isFolder,
-            children = children,
-            filePath = doc.uri.toString()
+            children = children
         )
     }
 }

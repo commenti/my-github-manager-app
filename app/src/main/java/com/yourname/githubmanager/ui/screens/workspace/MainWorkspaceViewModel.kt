@@ -40,7 +40,7 @@ class MainWorkspaceViewModel : ViewModel() {
             selectedFolderUri = null,
             fileTree = FileNode(
                 name = uri.lastPathSegment ?: "UnknownFile",
-                filePath = uri.toString(),
+                path = uri.toString(),
                 isFolder = false
             )
         )
@@ -155,7 +155,7 @@ class MainWorkspaceViewModel : ViewModel() {
 
         return FileNode(
             name = name,
-            filePath = doc.uri.toString(),
+            path = doc.uri.toString(),
             isFolder = isFolder,
             children = children
         )

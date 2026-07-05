@@ -108,4 +108,3 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
         _uiState.update { it.copy(isTokenSaved = false) }
     }
 }
-

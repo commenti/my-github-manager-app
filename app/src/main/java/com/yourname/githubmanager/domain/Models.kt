@@ -1,5 +1,12 @@
 package com.yourname.githubmanager.domain
 
+data class FileNode(
+    val name: String,
+    val filePath: String,
+    val isFolder: Boolean,
+    val children: List<FileNode> = emptyList()
+)
+
 /**
  * Represents a single node in a file/folder tree.
  *

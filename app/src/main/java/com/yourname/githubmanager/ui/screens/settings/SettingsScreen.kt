@@ -34,8 +34,8 @@ import com.yourname.githubmanager.ui.components.GitHubManagerTopAppBar
 import com.yourname.githubmanager.ui.components.PrivacyPolicyDialog
 
 /**
- * Settings screen: lets the user set the GitHub repo owner/name and their
- * Personal Access Token, and view the privacy policy.
+ * Settings screen: lets the user set the GitHub repo owner/name/branch and
+ * their Personal Access Token, and view the privacy policy.
  *
  * @param onBackClick Invoked when the user wants to leave this screen
  *                     (e.g. wired to `navController.popBackStack()` once
@@ -92,6 +92,16 @@ fun SettingsScreen(
                 value = uiState.repoName,
                 onValueChange = viewModel::onRepoNameChange,
                 label = { Text("Repo name") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth()
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+
+            OutlinedTextField(
+                value = uiState.branch,
+                onValueChange = viewModel::onBranchChange,
+                label = { Text("Branch") },
+                placeholder = { Text("main") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth()
             )

@@ -12,6 +12,10 @@ import androidx.work.workDataOf
 import com.yourname.githubmanager.data.filesystem.ZipExtractor
 import com.yourname.githubmanager.data.filesystem.getDisplayName
 import com.yourname.githubmanager.data.filesystem.persistUriPermission
+import com.yourname.githubmanager.data.github.GitHubRepository
+import com.yourname.githubmanager.data.local.AppPreferences
+import com.yourname.githubmanager.data.local.ProjectSyncStore
+import com.yourname.githubmanager.data.local.SecureTokenStore
 import com.yourname.githubmanager.domain.FileNode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -20,11 +24,34 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.io.File
 
+/**
+ * Where the currently-imported folder currently stands relative to GitHub,
+ * used by MainWorkspaceScreen to decide which button to show.
+ */
+sealed class UploadButtonState {
+    /** Never pushed from this app before -> show "Upload". */
+    object NotUploaded : UploadButtonState()
+
+    /** Already pushed, and Settings still points at that same repo -> show "Commit Changes". */
+    object UploadedSameRepo : UploadButtonState()
+
+    /**
+     * Already pushed, but to a *different* repo than what Settings now
+     * points at (e.g. the user changed owner/repoName since). The UI
+     * should warn before letting the user hit "Upload" again, since that
+     * starts a brand-new sync history against the new repo.
+     */
+    data class UploadedDifferentRepo(val previousOwner: String, val previousRepoName: String) : UploadButtonState()
+}
+
 data class WorkspaceUiState(
     val selectedFolderUri: Uri? = null,
     val isExtracting: Boolean = false,
     val fileTree: FileNode? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val uploadButtonState: UploadButtonState = UploadButtonState.NotUploaded,
+    val isSyncing: Boolean = false,
+    val syncSuccessMessage: String? = null
 )
 
 class MainWorkspaceViewModel : ViewModel() {
@@ -83,6 +110,7 @@ class MainWorkspaceViewModel : ViewModel() {
                     isFolder = false
                 )
             )
+            refreshUploadButtonState(context)
         }
     }
 
@@ -91,6 +119,11 @@ class MainWorkspaceViewModel : ViewModel() {
      */
     fun clearError() {
         _uiState.value = _uiState.value.copy(errorMessage = null)
+    }
+
+    /** Clears the "upload/commit succeeded" message after it's been shown. */
+    fun clearSyncSuccessMessage() {
+        _uiState.value = _uiState.value.copy(syncSuccessMessage = null)
     }
 
     /**
@@ -139,6 +172,7 @@ class MainWorkspaceViewModel : ViewModel() {
                             fileTree = rootNode,
                             errorMessage = null
                         )
+                        refreshUploadButtonState(context)
                     } else {
                         _uiState.value = _uiState.value.copy(
                             isExtracting = false,
@@ -171,6 +205,7 @@ class MainWorkspaceViewModel : ViewModel() {
                 isExtracting = false,
                 fileTree = rootNode
             )
+            refreshUploadButtonState(context)
         } catch (e: Exception) {
             _uiState.value = _uiState.value.copy(
                 isExtracting = false,
@@ -224,4 +259,130 @@ class MainWorkspaceViewModel : ViewModel() {
             children = children
         )
     }
+
+    // ── Upload / Commit Changes ─────────────────────────────────────────
+
+    /**
+     * A stable identifier for the currently-imported folder, used as the
+     * key ProjectSyncStore tracks sync state under. [FileNode.path] is
+     * either a content:// SAF URI or an absolute extracted-zip file path —
+     * both are stable across app restarts for the *same* folder, which is
+     * exactly what ProjectSyncStore requires (see ProjectSyncStore.kt).
+     */
+    private fun folderIdentifierFor(node: FileNode): String = node.path
+
+    /**
+     * Re-checks ProjectSyncStore + the currently-saved repo config and
+     * updates [WorkspaceUiState.uploadButtonState] accordingly. Called
+     * every time a new fileTree is set (new import) and again after every
+     * successful upload/commit.
+     */
+    private fun refreshUploadButtonState(context: Context) {
+        val node = _uiState.value.fileTree ?: return
+        viewModelScope.launch {
+            val repoConfig = AppPreferences.getRepoInfoFlow(context).first()
+            val saved = ProjectSyncStore.getSyncMetadata(context, folderIdentifierFor(node))
+
+            val newState = when {
+                saved == null -> UploadButtonState.NotUploaded
+                saved.repoOwner == repoConfig.owner && saved.repoName == repoConfig.repoName ->
+                    UploadButtonState.UploadedSameRepo
+                else -> UploadButtonState.UploadedDifferentRepo(saved.repoOwner, saved.repoName)
+            }
+            _uiState.value = _uiState.value.copy(uploadButtonState = newState)
+        }
+    }
+
+    /** Pushes the current folder to GitHub for the first time. */
+    fun onUploadClick(context: Context) {
+        performSync(context, isCommit = false)
+    }
+
+    /** Pushes only what changed in the current folder since the last successful sync. */
+    fun onCommitChangesClick(context: Context) {
+        performSync(context, isCommit = true)
+    }
+
+    /**
+     * Shared Upload/Commit Changes flow. Reads repo owner/name/branch from
+     * [AppPreferences] and the PAT from [SecureTokenStore] fresh every time
+     * (rather than caching them), since either can change in Settings while
+     * this screen is open.
+     *
+     * Branch handling: [AppPreferences.getRepoInfoFlow] already guarantees a
+     * non-blank branch (defaulting to "main" internally — see AppPreferences.kt),
+     * but the `.ifBlank { "main" }` below is kept as a last-line-of-defense
+     * fallback rather than trusting that invariant blindly. The branch is
+     * NEVER hardcoded here — it always comes from Settings.
+     */
+    private fun performSync(context: Context, isCommit: Boolean) {
+        val node = _uiState.value.fileTree
+        if (node == null) {
+            _uiState.value = _uiState.value.copy(errorMessage = "No project imported yet.")
+            return
+        }
+
+        val token = SecureTokenStore.getToken(context)
+        if (token.isNullOrBlank()) {
+            _uiState.value = _uiState.value.copy(
+                errorMessage = "No GitHub token saved. Add one in Settings first."
+            )
+            return
+        }
+
+        viewModelScope.launch {
+            val repoConfig = AppPreferences.getRepoInfoFlow(context).first()
+            if (repoConfig.owner.isBlank() || repoConfig.repoName.isBlank()) {
+                _uiState.value = _uiState.value.copy(
+                    errorMessage = "Set a repo owner and repo name in Settings first."
+                )
+                return@launch
+            }
+            val branch = repoConfig.branch.ifBlank { "main" }
+            val folderIdentifier = folderIdentifierFor(node)
+
+            _uiState.value = _uiState.value.copy(isSyncing = true, errorMessage = null, syncSuccessMessage = null)
+
+            val result = if (isCommit) {
+                GitHubRepository.commitChanges(
+                    context = context,
+                    folderNode = node,
+                    folderIdentifier = folderIdentifier,
+                    repoOwner = repoConfig.owner,
+                    repoName = repoConfig.repoName,
+                    token = token,
+                    branch = branch
+                )
+            } else {
+                GitHubRepository.uploadProject(
+                    context = context,
+                    folderNode = node,
+                    folderIdentifier = folderIdentifier,
+                    repoOwner = repoConfig.owner,
+                    repoName = repoConfig.repoName,
+                    token = token,
+                    branch = branch
+                )
+            }
+
+            result.fold(
+                onSuccess = { shaOrStatus ->
+                    val message = when {
+                        shaOrStatus == "NO_CHANGES" -> "No changes to commit."
+                        isCommit -> "Changes committed successfully."
+                        else -> "Project uploaded successfully."
+                    }
+                    _uiState.value = _uiState.value.copy(isSyncing = false, syncSuccessMessage = message)
+                    refreshUploadButtonState(context)
+                },
+                onFailure = { e ->
+                    _uiState.value = _uiState.value.copy(
+                        isSyncing = false,
+                        errorMessage = e.localizedMessage ?: "Sync failed."
+                    )
+                }
+            )
+        }
+    }
 }
+

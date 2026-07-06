@@ -25,19 +25,17 @@ import java.security.MessageDigest
  * A plain singleton object (no DI), consistent with AppPreferences /
  * SecureTokenStore / ProjectSyncStore.
  *
- * IMPORTANT DEVIATION FROM THE ORIGINAL SIGNATURES:
- * The requested signatures were
- *   uploadProject(folderNode, repoOwner, repoName, token): Result<String>
- *   commitChanges(folderNode, repoOwner, repoName, token): Result<String>
- * Two things beyond that turned out to be unavoidable:
- *  1. A [Context] is required to actually read file bytes (SAF content://
- *     URIs need a ContentResolver; extracted-zip files are plain java.io.File
- *     paths — both cases already exist in MainWorkspaceViewModel).
- *  2. A `folderIdentifier` is required because that's what ProjectSyncStore
- *     keys its saved state by (see ProjectSyncStore.kt) — without it there
- *     is no way to know "has this exact folder been synced before?".
- * Both are added as extra parameters; nothing about the requested behavior
- * changes.
+ * SYNC KEY IS REPO-BASED, NOT FOLDER-BASED:
+ * [ProjectSyncStore] tracks sync state per repo (owner+repoName+branch), not
+ * per local folder — see [ProjectSyncStore]'s class doc for why. Since
+ * [repoOwner], [repoName], and [branch] are already required parameters of
+ * both functions below, this object derives the sync key itself via
+ * [ProjectSyncStore.repoKeyFor] rather than taking a separate identifier
+ * from the caller. A [Context] is still required as an extra parameter
+ * beyond the originally-requested signatures, because actually reading file
+ * bytes needs it (SAF content:// URIs need a ContentResolver; extracted-zip
+ * files are plain java.io.File paths — both cases already exist in
+ * MainWorkspaceViewModel).
  */
 object GitHubRepository {
 
@@ -61,13 +59,13 @@ object GitHubRepository {
     suspend fun uploadProject(
         context: Context,
         folderNode: FileNode,
-        folderIdentifier: String,
         repoOwner: String,
         repoName: String,
         token: String,
         branch: String = DEFAULT_BRANCH
     ): Result<String> = withContext(Dispatchers.IO) {
         try {
+            val repoKey = ProjectSyncStore.repoKeyFor(repoOwner, repoName, branch)
             val authHeader = GitHubApiService.bearerToken(token)
 
             val flatFiles = flattenTree(folderNode)
@@ -157,7 +155,7 @@ object GitHubRepository {
 
             // Only persist once every step above has actually succeeded.
             ProjectSyncStore.saveSyncMetadata(
-                context, folderIdentifier,
+                context, repoKey,
                 SyncMetadata(
                     repoOwner = repoOwner,
                     repoName = repoName,
@@ -175,8 +173,14 @@ object GitHubRepository {
 
     /**
      * Incremental push: diffs [folderNode]'s current file hashes against
-     * the last saved [SyncMetadata] for [folderIdentifier] and only sends
-     * changed/new/deleted files.
+     * the last saved [SyncMetadata] for this repo (owner+repoName+branch)
+     * and only sends changed/new/deleted files.
+     *
+     * Deletion IS already handled here: [deletedPaths] below is exactly the
+     * set of paths that were present in the last saved sync but are no
+     * longer present in [folderNode], and each one is sent to the Trees API
+     * with a null sha, which removes that path from the resulting tree.
+     * Nothing further is needed for deletions to reach GitHub.
      *
      * Uses the *saved* lastCommitSha as the new commit's parent (not a
      * freshly-fetched ref) on purpose: PATCHing the ref with force=false
@@ -187,16 +191,16 @@ object GitHubRepository {
     suspend fun commitChanges(
         context: Context,
         folderNode: FileNode,
-        folderIdentifier: String,
         repoOwner: String,
         repoName: String,
         token: String,
         branch: String = DEFAULT_BRANCH
     ): Result<String> = withContext(Dispatchers.IO) {
         try {
-            val saved = ProjectSyncStore.getSyncMetadata(context, folderIdentifier)
+            val repoKey = ProjectSyncStore.repoKeyFor(repoOwner, repoName, branch)
+            val saved = ProjectSyncStore.getSyncMetadata(context, repoKey)
                 ?: return@withContext Result.failure(
-                    Exception("This folder has never been uploaded yet. Use Upload first.")
+                    Exception("This repo has never been uploaded to from this app yet. Use Upload first.")
                 )
 
             val authHeader = GitHubApiService.bearerToken(token)
@@ -276,7 +280,7 @@ object GitHubRepository {
             }
 
             ProjectSyncStore.saveSyncMetadata(
-                context, folderIdentifier,
+                context, repoKey,
                 SyncMetadata(
                     repoOwner = repoOwner,
                     repoName = repoName,
@@ -357,5 +361,4 @@ object GitHubRepository {
         return if (action.isEmpty()) reason else "$action failed: $reason"
     }
 }
-
 

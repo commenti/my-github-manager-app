@@ -25,21 +25,26 @@ import kotlinx.coroutines.launch
 import java.io.File
 
 /**
- * Where the currently-imported folder currently stands relative to GitHub,
- * used by MainWorkspaceScreen to decide which button to show.
+ * Where the currently-configured repo currently stands relative to what
+ * this app has pushed, used by MainWorkspaceScreen to decide which button
+ * to show.
  */
 sealed class UploadButtonState {
-    /** Never pushed from this app before -> show "Upload". */
+    /** This repo (per Settings) has never been pushed to from this app -> show "Upload". */
     object NotUploaded : UploadButtonState()
 
-    /** Already pushed, and Settings still points at that same repo -> show "Commit Changes". */
+    /** This repo already has a saved sync record -> show "Commit Changes". */
     object UploadedSameRepo : UploadButtonState()
 
     /**
-     * Already pushed, but to a *different* repo than what Settings now
-     * points at (e.g. the user changed owner/repoName since). The UI
-     * should warn before letting the user hit "Upload" again, since that
-     * starts a brand-new sync history against the new repo.
+     * Retained for source compatibility only. Sync state is now looked up
+     * directly by the repo currently configured in Settings (see
+     * [refreshUploadButtonState]), so a mismatch between "the repo this was
+     * last synced to" and "the repo Settings points at" can no longer occur
+     * — if Settings points at a different repo, that repo simply has its
+     * own independent sync record (or none yet). This case is no longer
+     * constructed by [refreshUploadButtonState]; it is kept only so any
+     * exhaustive `when` on [UploadButtonState] elsewhere still compiles.
      */
     data class UploadedDifferentRepo(val previousOwner: String, val previousRepoName: String) : UploadButtonState()
 }
@@ -263,31 +268,35 @@ class MainWorkspaceViewModel : ViewModel() {
     // ── Upload / Commit Changes ─────────────────────────────────────────
 
     /**
-     * A stable identifier for the currently-imported folder, used as the
-     * key ProjectSyncStore tracks sync state under. [FileNode.path] is
-     * either a content:// SAF URI or an absolute extracted-zip file path —
-     * both are stable across app restarts for the *same* folder, which is
-     * exactly what ProjectSyncStore requires (see ProjectSyncStore.kt).
-     */
-    private fun folderIdentifierFor(node: FileNode): String = node.path
-
-    /**
-     * Re-checks ProjectSyncStore + the currently-saved repo config and
-     * updates [WorkspaceUiState.uploadButtonState] accordingly. Called
-     * every time a new fileTree is set (new import) and again after every
-     * successful upload/commit.
+     * Re-checks ProjectSyncStore against the currently-configured repo
+     * (owner+repoName+branch from Settings) and updates
+     * [WorkspaceUiState.uploadButtonState] accordingly. Called every time a
+     * new fileTree is set (new import) and again after every successful
+     * upload/commit.
+     *
+     * Deliberately keyed by the repo in Settings, not by the imported
+     * folder's identity — see [ProjectSyncStore]'s class doc. This is what
+     * makes re-importing the same project from a freshly-extracted zip
+     * (a brand-new local folder every time) still correctly show "Commit
+     * Changes" instead of "Upload", as long as Settings still points at the
+     * same repo that folder was previously pushed to.
      */
     private fun refreshUploadButtonState(context: Context) {
-        val node = _uiState.value.fileTree ?: return
+        if (_uiState.value.fileTree == null) return
         viewModelScope.launch {
             val repoConfig = AppPreferences.getRepoInfoFlow(context).first()
-            val saved = ProjectSyncStore.getSyncMetadata(context, folderIdentifierFor(node))
+            if (repoConfig.owner.isBlank() || repoConfig.repoName.isBlank()) {
+                _uiState.value = _uiState.value.copy(uploadButtonState = UploadButtonState.NotUploaded)
+                return@launch
+            }
+            val branch = repoConfig.branch.ifBlank { "main" }
+            val repoKey = ProjectSyncStore.repoKeyFor(repoConfig.owner, repoConfig.repoName, branch)
+            val saved = ProjectSyncStore.getSyncMetadata(context, repoKey)
 
-            val newState = when {
-                saved == null -> UploadButtonState.NotUploaded
-                saved.repoOwner == repoConfig.owner && saved.repoName == repoConfig.repoName ->
-                    UploadButtonState.UploadedSameRepo
-                else -> UploadButtonState.UploadedDifferentRepo(saved.repoOwner, saved.repoName)
+            val newState = if (saved == null) {
+                UploadButtonState.NotUploaded
+            } else {
+                UploadButtonState.UploadedSameRepo
             }
             _uiState.value = _uiState.value.copy(uploadButtonState = newState)
         }
@@ -314,6 +323,10 @@ class MainWorkspaceViewModel : ViewModel() {
      * but the `.ifBlank { "main" }` below is kept as a last-line-of-defense
      * fallback rather than trusting that invariant blindly. The branch is
      * NEVER hardcoded here — it always comes from Settings.
+     *
+     * Note: [GitHubRepository] derives its own repo-based sync key from
+     * [repoConfig]'s owner/repoName/branch internally, so no folder
+     * identifier is passed here at all anymore.
      */
     private fun performSync(context: Context, isCommit: Boolean) {
         val node = _uiState.value.fileTree
@@ -339,7 +352,6 @@ class MainWorkspaceViewModel : ViewModel() {
                 return@launch
             }
             val branch = repoConfig.branch.ifBlank { "main" }
-            val folderIdentifier = folderIdentifierFor(node)
 
             _uiState.value = _uiState.value.copy(isSyncing = true, errorMessage = null, syncSuccessMessage = null)
 
@@ -347,7 +359,6 @@ class MainWorkspaceViewModel : ViewModel() {
                 GitHubRepository.commitChanges(
                     context = context,
                     folderNode = node,
-                    folderIdentifier = folderIdentifier,
                     repoOwner = repoConfig.owner,
                     repoName = repoConfig.repoName,
                     token = token,
@@ -357,7 +368,6 @@ class MainWorkspaceViewModel : ViewModel() {
                 GitHubRepository.uploadProject(
                     context = context,
                     folderNode = node,
-                    folderIdentifier = folderIdentifier,
                     repoOwner = repoConfig.owner,
                     repoName = repoConfig.repoName,
                     token = token,
@@ -385,4 +395,3 @@ class MainWorkspaceViewModel : ViewModel() {
         }
     }
 }
-

@@ -20,10 +20,15 @@ import kotlinx.coroutines.launch
  * NEVER pre-filled with the previously saved token (we don't read the
  * token back out of SecureTokenStore for display, only [isTokenSaved]
  * status is exposed).
+ *
+ * [branch] defaults to "main" to match [AppPreferences]'s own default —
+ * both before anything has been saved yet, and as a fallback if older
+ * saved data predates this field.
  */
 data class SettingsUiState(
     val repoOwner: String = "",
     val repoName: String = "",
+    val branch: String = "main",
     val token: String = "",
     val isTokenSaved: Boolean = false,
     val showPrivacyDialog: Boolean = false,
@@ -45,10 +50,16 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     val uiState: StateFlow<SettingsUiState> = _uiState.asStateFlow()
 
     init {
-        // Reflect saved repo owner/name as they change.
+        // Reflect saved repo owner/name/branch as they change.
         viewModelScope.launch {
-            AppPreferences.getRepoInfoFlow(appContext).collect { (owner, repoName) ->
-                _uiState.update { it.copy(repoOwner = owner, repoName = repoName) }
+            AppPreferences.getRepoInfoFlow(appContext).collect { repoConfig ->
+                _uiState.update {
+                    it.copy(
+                        repoOwner = repoConfig.owner,
+                        repoName = repoConfig.repoName,
+                        branch = repoConfig.branch
+                    )
+                }
             }
         }
         // Reflect whether a token already exists, without ever loading its value.
@@ -61,6 +72,10 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
 
     fun onRepoNameChange(value: String) {
         _uiState.update { it.copy(repoName = value) }
+    }
+
+    fun onBranchChange(value: String) {
+        _uiState.update { it.copy(branch = value) }
     }
 
     fun onTokenChange(value: String) {
@@ -76,9 +91,9 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
     }
 
     /**
-     * Persists repo owner/name (DataStore) and, if the user typed one,
-     * the token (EncryptedSharedPreferences). Clears the token field from
-     * memory right after saving it.
+     * Persists repo owner/name/branch (DataStore) and, if the user typed
+     * one, the token (EncryptedSharedPreferences). Clears the token field
+     * from memory right after saving it.
      */
     fun onSaveClick() {
         val current = _uiState.value
@@ -86,7 +101,8 @@ class SettingsViewModel(application: Application) : AndroidViewModel(application
             AppPreferences.saveRepoInfo(
                 context = appContext,
                 owner = current.repoOwner.trim(),
-                repoName = current.repoName.trim()
+                repoName = current.repoName.trim(),
+                branch = current.branch.trim().ifBlank { "main" }
             )
 
             if (current.token.isNotBlank()) {

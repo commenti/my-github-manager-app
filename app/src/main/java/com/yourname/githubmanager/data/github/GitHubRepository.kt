@@ -2,316 +2,359 @@
 package com.yourname.githubmanager.data.github
 
 import android.content.Context
+import android.net.Uri
 import android.util.Base64
 import com.google.gson.Gson
 import com.yourname.githubmanager.data.local.ProjectSyncStore
-import com.yourname.githubmanager.data.local.SecureTokenStore
 import com.yourname.githubmanager.data.local.SyncMetadata
+import com.yourname.githubmanager.domain.FileNode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import retrofit2.Response
+import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
 
 /**
- * Which GitHub repo/branch a project folder should sync to.
- * Comes from whatever the user has configured in Settings (AppPreferences).
- */
-data class RepoConfig(
-    val owner: String,
-    val repoName: String,
-    val branch: String = "main"
-)
-
-/**
- * One file as read from local disk, ready to be pushed.
+ * High-level "Upload" / "Commit Changes" logic that MainWorkspaceViewModel
+ * calls. Talks to GitHub only through [GitHubApiService] and only reads the
+ * existing DTOs from GitHubModels.kt. Persists the result of every fully
+ * successful push through [ProjectSyncStore] — never partially, matching
+ * the contract documented on [ProjectSyncStore.saveSyncMetadata].
  *
- * @param path    Repo-relative path, e.g. "app/src/main/.../Foo.kt"
- * @param content Raw text content of the file. (Binary files aren't
- *                supported by this simple representation — every file is
- *                assumed to be UTF-8 text, which matches a Kotlin/Android
- *                source project.)
- */
-data class LocalFile(
-    val path: String,
-    val content: String
-)
-
-/** Outcome of an upload/commit attempt. */
-sealed class GitHubSyncResult {
-    data class Success(val commitSha: String, val filesPushed: Int) : GitHubSyncResult()
-    data class Error(val type: ErrorType, val message: String) : GitHubSyncResult()
-}
-
-enum class ErrorType {
-    NO_TOKEN,
-    UNAUTHORIZED,
-    RATE_LIMITED,
-    NETWORK,
-    UNKNOWN
-}
-
-/**
- * Implements the two operations MainWorkspaceViewModel needs:
- *  - [uploadProject]: first-ever push of a folder to a repo (no history to build on)
- *  - [commitChanges]: incremental push, diffing against the folder's last
- *    known synced state in [ProjectSyncStore]
+ * A plain singleton object (no DI), consistent with AppPreferences /
+ * SecureTokenStore / ProjectSyncStore.
  *
- * Both follow the same Git Data API sequence: blob(s) -> tree -> commit ->
- * ref update. [ProjectSyncStore] is only written to after every step in
- * that sequence has succeeded — a failure partway through leaves the
- * stored sync record untouched, per the app's "no partial state" rule.
+ * IMPORTANT DEVIATION FROM THE ORIGINAL SIGNATURES:
+ * The requested signatures were
+ *   uploadProject(folderNode, repoOwner, repoName, token): Result<String>
+ *   commitChanges(folderNode, repoOwner, repoName, token): Result<String>
+ * Two things beyond that turned out to be unavoidable:
+ *  1. A [Context] is required to actually read file bytes (SAF content://
+ *     URIs need a ContentResolver; extracted-zip files are plain java.io.File
+ *     paths — both cases already exist in MainWorkspaceViewModel).
+ *  2. A `folderIdentifier` is required because that's what ProjectSyncStore
+ *     keys its saved state by (see ProjectSyncStore.kt) — without it there
+ *     is no way to know "has this exact folder been synced before?".
+ * Both are added as extra parameters; nothing about the requested behavior
+ * changes.
  */
-class GitHubRepository(
-    private val api: GitHubApiService
-) {
+object GitHubRepository {
 
-    private val gson = Gson()
+    private const val DEFAULT_BRANCH = "main"
+
+    private val apiService: GitHubApiService by lazy { GitHubApiClient.create() }
+    private val errorGson: Gson by lazy { Gson() }
+
+    // ── Public API ──────────────────────────────────────────────────────
 
     /**
-     * Pushes every file in [files] as a brand-new commit with no parent —
-     * use only when this folder has never been synced before (or the user
-     * has explicitly chosen to re-link it to a different repo).
+     * First-ever push of [folderNode] from this app to [repoOwner]/[repoName].
+     *
+     * Non-destructive: if the target [branch] already has commits (e.g. the
+     * repo was created on GitHub with a README), this layers the folder's
+     * files on top of that existing tree instead of replacing it. If the
+     * branch has no commits at all, this fails with a clear message asking
+     * the user to make one first — the Git Data API this app uses can only
+     * update an *existing* ref, not create a brand-new one.
      */
     suspend fun uploadProject(
         context: Context,
+        folderNode: FileNode,
         folderIdentifier: String,
-        files: List<LocalFile>,
-        repoConfig: RepoConfig,
-        commitMessage: String = "Initial upload from GitHub Manager App"
-    ): GitHubSyncResult = withContext(Dispatchers.IO) {
-        val authHeader = authHeaderOrNull(context) ?: return@withContext GitHubSyncResult.Error(
-            ErrorType.NO_TOKEN,
-            "No GitHub token saved. Add one in Settings."
-        )
+        repoOwner: String,
+        repoName: String,
+        token: String,
+        branch: String = DEFAULT_BRANCH
+    ): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val authHeader = GitHubApiService.bearerToken(token)
 
-        runCatching {
-            // 1. Blob per file.
-            val treeEntries = mutableListOf<TreeEntry>()
-            for (file in files) {
-                val blobResponse = api.createBlob(
-                    repoConfig.owner,
-                    repoConfig.repoName,
-                    authHeader,
-                    BlobRequest(content = encodeBase64(file.content))
-                )
-                val blob = unwrapOrReturn(blobResponse) { return@withContext it }
-                treeEntries += TreeEntry(path = file.path, sha = blob.sha)
+            val flatFiles = flattenTree(folderNode)
+            if (flatFiles.isEmpty()) {
+                return@withContext Result.failure(Exception("No files found to upload."))
             }
 
-            // 2. Tree — no base_tree, this is the very first commit for the repo/folder.
-            val treeResponse = api.createTree(
-                repoConfig.owner,
-                repoConfig.repoName,
-                authHeader,
-                TreeRequest(baseTree = null, tree = treeEntries)
-            )
-            val tree = unwrapOrReturn(treeResponse) { return@withContext it }
+            // Find out what the branch currently points to (must already
+            // exist — see doc comment above).
+            val refResponse = apiService.getRef(authHeader, repoOwner, repoName, branch)
+            val (parentCommitSha, baseTreeSha) = when {
+                refResponse.isSuccessful -> {
+                    val commitSha = refResponse.body()!!.gitObject.sha
+                    val commitResponse = apiService.getCommit(authHeader, repoOwner, repoName, commitSha)
+                    if (!commitResponse.isSuccessful) {
+                        return@withContext Result.failure(
+                            Exception(describeError("Reading existing commit", commitResponse))
+                        )
+                    }
+                    commitSha to commitResponse.body()!!.tree.sha
+                }
+                refResponse.code() == 404 -> {
+                    return@withContext Result.failure(
+                        Exception(
+                            "Branch '$branch' on $repoOwner/$repoName has no commits yet. " +
+                                "Create at least one commit (e.g. a README) on GitHub first, " +
+                                "then try Upload again."
+                        )
+                    )
+                }
+                else -> {
+                    return@withContext Result.failure(Exception(describeError("Checking branch", refResponse)))
+                }
+            }
 
-            // 3. Commit — no parents, since there's no prior commit to build on.
-            val commitResponse = api.createCommit(
-                repoConfig.owner,
-                repoConfig.repoName,
-                authHeader,
-                CommitRequest(message = commitMessage, tree = tree.sha, parents = emptyList())
-            )
-            val commit = unwrapOrReturn(commitResponse) { return@withContext it }
+            // Build a blob for every file and record its content hash for
+            // future diffing by commitChanges().
+            val fileHashes = mutableMapOf<String, String>()
+            val treeEntries = mutableListOf<TreeEntry>()
+            for (flatFile in flatFiles) {
+                val bytes = readNodeBytes(context, flatFile.node)
+                fileHashes[flatFile.repoPath] = sha256Hex(bytes)
 
-            // 4. Move the branch ref to point at the new commit.
-            val refResponse = api.updateRef(
-                repoConfig.owner,
-                repoConfig.repoName,
-                repoConfig.branch,
-                authHeader,
-                RefUpdateRequest(sha = commit.sha, force = false)
-            )
-            unwrapOrReturn(refResponse) { return@withContext it }
+                val blobResponse = apiService.createBlob(
+                    authHeader, repoOwner, repoName,
+                    BlobRequest(content = Base64.encodeToString(bytes, Base64.NO_WRAP))
+                )
+                if (!blobResponse.isSuccessful) {
+                    return@withContext Result.failure(
+                        Exception(describeError("Uploading '${flatFile.repoPath}'", blobResponse))
+                    )
+                }
+                treeEntries.add(
+                    TreeEntry(path = flatFile.repoPath, sha = blobResponse.body()!!.sha)
+                )
+            }
 
-            // 5. Only now, with every step confirmed successful, persist the sync record.
+            val treeResponse = apiService.createTree(
+                authHeader, repoOwner, repoName,
+                TreeRequest(baseTree = baseTreeSha, tree = treeEntries)
+            )
+            if (!treeResponse.isSuccessful) {
+                return@withContext Result.failure(Exception(describeError("Building tree", treeResponse)))
+            }
+            val newTreeSha = treeResponse.body()!!.sha
+
+            val commitResponse = apiService.createCommit(
+                authHeader, repoOwner, repoName,
+                CommitRequest(
+                    message = "Initial upload via GitHub Manager",
+                    tree = newTreeSha,
+                    parents = listOf(parentCommitSha)
+                )
+            )
+            if (!commitResponse.isSuccessful) {
+                return@withContext Result.failure(Exception(describeError("Creating commit", commitResponse)))
+            }
+            val newCommitSha = commitResponse.body()!!.sha
+
+            val refUpdateResponse = apiService.updateRef(
+                authHeader, repoOwner, repoName, branch,
+                RefUpdateRequest(sha = newCommitSha, force = false)
+            )
+            if (!refUpdateResponse.isSuccessful) {
+                return@withContext Result.failure(Exception(describeError("Updating branch", refUpdateResponse)))
+            }
+
+            // Only persist once every step above has actually succeeded.
             ProjectSyncStore.saveSyncMetadata(
-                context,
-                folderIdentifier,
+                context, folderIdentifier,
                 SyncMetadata(
-                    repoOwner = repoConfig.owner,
-                    repoName = repoConfig.repoName,
-                    lastCommitSha = commit.sha,
-                    lastTreeSha = tree.sha,
-                    fileHashes = files.associate { it.path to sha256(it.content) }
+                    repoOwner = repoOwner,
+                    repoName = repoName,
+                    lastCommitSha = newCommitSha,
+                    lastTreeSha = newTreeSha,
+                    fileHashes = fileHashes
                 )
             )
 
-            GitHubSyncResult.Success(commitSha = commit.sha, filesPushed = files.size)
-        }.getOrElse { throwable -> throwable.toSyncError() }
+            Result.success(newCommitSha)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
     }
 
     /**
-     * Pushes only the files that changed/were added/were deleted since the
-     * folder's last recorded sync. Falls back to [uploadProject] if there's
-     * no prior sync record at all (defensive — MainWorkspaceViewModel should
-     * normally already route that case to "Upload" before ever calling this).
+     * Incremental push: diffs [folderNode]'s current file hashes against
+     * the last saved [SyncMetadata] for [folderIdentifier] and only sends
+     * changed/new/deleted files.
+     *
+     * Uses the *saved* lastCommitSha as the new commit's parent (not a
+     * freshly-fetched ref) on purpose: PATCHing the ref with force=false
+     * will then be rejected by GitHub if it isn't a fast-forward — i.e. if
+     * someone else pushed to this branch outside the app since our last
+     * sync. That rejection is the safety net, not a bug.
      */
     suspend fun commitChanges(
         context: Context,
+        folderNode: FileNode,
         folderIdentifier: String,
-        files: List<LocalFile>,
-        repoConfig: RepoConfig,
-        commitMessage: String = "Update from GitHub Manager App"
-    ): GitHubSyncResult = withContext(Dispatchers.IO) {
-        val syncMeta = ProjectSyncStore.getSyncMetadata(context, folderIdentifier)
-            ?: return@withContext uploadProject(context, folderIdentifier, files, repoConfig, commitMessage)
-
-        val authHeader = authHeaderOrNull(context) ?: return@withContext GitHubSyncResult.Error(
-            ErrorType.NO_TOKEN,
-            "No GitHub token saved. Add one in Settings."
-        )
-
-        val currentHashes = files.associate { it.path to sha256(it.content) }
-        val changedOrNewPaths = currentHashes.filter { (path, hash) ->
-            syncMeta.fileHashes[path] != hash
-        }.keys
-        val deletedPaths = syncMeta.fileHashes.keys - currentHashes.keys
-
-        if (changedOrNewPaths.isEmpty() && deletedPaths.isEmpty()) {
-            // Nothing to push — treat as a no-op success against the last commit.
-            return@withContext GitHubSyncResult.Success(commitSha = syncMeta.lastCommitSha, filesPushed = 0)
-        }
-
-        val filesByPath = files.associateBy { it.path }
-
-        runCatching {
-            // 1. Blobs only for changed/new files.
-            val treeEntries = mutableListOf<TreeEntry>()
-            for (path in changedOrNewPaths) {
-                val file = filesByPath.getValue(path)
-                val blobResponse = api.createBlob(
-                    repoConfig.owner,
-                    repoConfig.repoName,
-                    authHeader,
-                    BlobRequest(content = encodeBase64(file.content))
+        repoOwner: String,
+        repoName: String,
+        token: String,
+        branch: String = DEFAULT_BRANCH
+    ): Result<String> = withContext(Dispatchers.IO) {
+        try {
+            val saved = ProjectSyncStore.getSyncMetadata(context, folderIdentifier)
+                ?: return@withContext Result.failure(
+                    Exception("This folder has never been uploaded yet. Use Upload first.")
                 )
-                val blob = unwrapOrReturn(blobResponse) { return@withContext it }
-                treeEntries += TreeEntry(path = path, sha = blob.sha)
+
+            val authHeader = GitHubApiService.bearerToken(token)
+            val flatFiles = flattenTree(folderNode)
+
+            // Hash every current file so we know exactly what changed.
+            val currentHashes = mutableMapOf<String, String>()
+            val bytesByPath = mutableMapOf<String, ByteArray>()
+            for (flatFile in flatFiles) {
+                val bytes = readNodeBytes(context, flatFile.node)
+                currentHashes[flatFile.repoPath] = sha256Hex(bytes)
+                bytesByPath[flatFile.repoPath] = bytes
             }
-            // Deleted files: explicit null-sha entries remove them from base_tree.
+
+            val changedPaths = currentHashes.filter { (path, hash) ->
+                saved.fileHashes[path] != hash
+            }.keys
+            val deletedPaths = saved.fileHashes.keys - currentHashes.keys
+
+            if (changedPaths.isEmpty() && deletedPaths.isEmpty()) {
+                // Nothing to do — not an error, just nothing to push.
+                return@withContext Result.success("NO_CHANGES")
+            }
+
+            val treeEntries = mutableListOf<TreeEntry>()
+
+            for (path in changedPaths) {
+                val bytes = bytesByPath.getValue(path)
+                val blobResponse = apiService.createBlob(
+                    authHeader, repoOwner, repoName,
+                    BlobRequest(content = Base64.encodeToString(bytes, Base64.NO_WRAP))
+                )
+                if (!blobResponse.isSuccessful) {
+                    return@withContext Result.failure(Exception(describeError("Uploading '$path'", blobResponse)))
+                }
+                treeEntries.add(TreeEntry(path = path, sha = blobResponse.body()!!.sha))
+            }
             for (path in deletedPaths) {
-                treeEntries += TreeEntry(path = path, sha = null)
+                // Explicit null sha == "remove this path" per GitHub Trees API.
+                treeEntries.add(TreeEntry(path = path, sha = null))
             }
 
-            // 2. Tree — layered on top of the last known tree, so unmodified
-            //    files are carried over without needing to be re-sent.
-            val treeResponse = api.createTree(
-                repoConfig.owner,
-                repoConfig.repoName,
-                authHeader,
-                TreeRequest(baseTree = syncMeta.lastTreeSha, tree = treeEntries)
+            val treeResponse = apiService.createTree(
+                authHeader, repoOwner, repoName,
+                TreeRequest(baseTree = saved.lastTreeSha, tree = treeEntries)
             )
-            val tree = unwrapOrReturn(treeResponse) { return@withContext it }
+            if (!treeResponse.isSuccessful) {
+                return@withContext Result.failure(Exception(describeError("Building tree", treeResponse)))
+            }
+            val newTreeSha = treeResponse.body()!!.sha
 
-            // 3. Commit — parent is the last commit, so history is linear.
-            val commitResponse = api.createCommit(
-                repoConfig.owner,
-                repoConfig.repoName,
-                authHeader,
-                CommitRequest(message = commitMessage, tree = tree.sha, parents = listOf(syncMeta.lastCommitSha))
+            val commitResponse = apiService.createCommit(
+                authHeader, repoOwner, repoName,
+                CommitRequest(
+                    message = "Update project via GitHub Manager",
+                    tree = newTreeSha,
+                    parents = listOf(saved.lastCommitSha)
+                )
             )
-            val commit = unwrapOrReturn(commitResponse) { return@withContext it }
+            if (!commitResponse.isSuccessful) {
+                return@withContext Result.failure(Exception(describeError("Creating commit", commitResponse)))
+            }
+            val newCommitSha = commitResponse.body()!!.sha
 
-            // 4. Fast-forward the branch ref.
-            val refResponse = api.updateRef(
-                repoConfig.owner,
-                repoConfig.repoName,
-                repoConfig.branch,
-                authHeader,
-                RefUpdateRequest(sha = commit.sha, force = false)
+            val refUpdateResponse = apiService.updateRef(
+                authHeader, repoOwner, repoName, branch,
+                RefUpdateRequest(sha = newCommitSha, force = false)
             )
-            unwrapOrReturn(refResponse) { return@withContext it }
+            if (!refUpdateResponse.isSuccessful) {
+                return@withContext Result.failure(
+                    Exception(
+                        "Updating branch failed (${describeError("", refUpdateResponse)}). " +
+                            "This usually means the branch changed outside the app since the " +
+                            "last sync — pull those changes into a fresh Upload before retrying."
+                    )
+                )
+            }
 
-            // 5. Persist the new baseline. fileHashes reflects the FULL current
-            //    file set (not just this commit's diff), so the next diff is correct.
             ProjectSyncStore.saveSyncMetadata(
-                context,
-                folderIdentifier,
+                context, folderIdentifier,
                 SyncMetadata(
-                    repoOwner = repoConfig.owner,
-                    repoName = repoConfig.repoName,
-                    lastCommitSha = commit.sha,
-                    lastTreeSha = tree.sha,
+                    repoOwner = repoOwner,
+                    repoName = repoName,
+                    lastCommitSha = newCommitSha,
+                    lastTreeSha = newTreeSha,
                     fileHashes = currentHashes
                 )
             )
 
-            GitHubSyncResult.Success(
-                commitSha = commit.sha,
-                filesPushed = changedOrNewPaths.size + deletedPaths.size
-            )
-        }.getOrElse { throwable -> throwable.toSyncError() }
+            Result.success(newCommitSha)
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────────
+    // ── Internal helpers ────────────────────────────────────────────────
 
-    private fun authHeaderOrNull(context: Context): String? {
-        val token = SecureTokenStore.getToken(context) ?: return null
-        return "Bearer $token"
+    private data class FlatFile(val repoPath: String, val node: FileNode)
+
+    /**
+     * Flattens a [FileNode] tree into repo-relative file paths.
+     *
+     * - If [root] is itself a single file (not a folder), it becomes one
+     *   entry named after itself.
+     * - If [root] is a folder, its own name is NOT included in the repo
+     *   paths — only its *contents* are uploaded, e.g. importing a folder
+     *   "MyApp" containing "src/Main.kt" produces the repo path
+     *   "src/Main.kt", not "MyApp/src/Main.kt".
+     */
+    private fun flattenTree(root: FileNode): List<FlatFile> {
+        if (!root.isFolder) return listOf(FlatFile(root.name, root))
+        val result = mutableListOf<FlatFile>()
+        collectChildren(root, "", result)
+        return result
     }
 
-    private fun encodeBase64(content: String): String =
-        Base64.encodeToString(content.toByteArray(Charsets.UTF_8), Base64.NO_WRAP)
-
-    private fun sha256(content: String): String {
-        val bytes = MessageDigest.getInstance("SHA-256").digest(content.toByteArray(Charsets.UTF_8))
-        return bytes.joinToString("") { "%02x".format(it) }
+    private fun collectChildren(node: FileNode, relativePath: String, out: MutableList<FlatFile>) {
+        for (child in node.children) {
+            val childPath = if (relativePath.isEmpty()) child.name else "$relativePath/${child.name}"
+            if (child.isFolder) {
+                collectChildren(child, childPath, out)
+            } else {
+                out.add(FlatFile(childPath, child))
+            }
+        }
     }
 
     /**
-     * Unwraps a successful Retrofit [Response], or short-circuits the caller
-     * with a mapped [GitHubSyncResult.Error] via [onError] when the response
-     * failed (non-2xx) or had no body.
-     *
-     * Note: [onError] must itself `return` from the enclosing suspend
-     * function (see call sites — they pass `{ return@withContext it }`),
-     * so a failed step never falls through to later steps or a partial
-     * ProjectSyncStore write.
+     * Reads a file's raw bytes regardless of whether it came from a SAF
+     * folder pick (content:// URI, stored in [FileNode.path]) or from a
+     * zip extracted into app-internal storage (plain absolute file path —
+     * see MainWorkspaceViewModel.fileToNode).
      */
-    private inline fun <T> unwrapOrReturn(
-        response: Response<T>,
-        onError: (GitHubSyncResult.Error) -> Nothing
-    ): T {
-        if (response.isSuccessful) {
-            return response.body() ?: onError(
-                GitHubSyncResult.Error(ErrorType.UNKNOWN, "GitHub returned an empty response.")
-            )
-        }
-        onError(mapHttpError(response))
-    }
-
-    private fun <T> mapHttpError(response: Response<T>): GitHubSyncResult.Error {
-        val serverMessage = runCatching {
-            response.errorBody()?.string()?.let { gson.fromJson(it, GitHubErrorResponse::class.java) }?.message
-        }.getOrNull()
-
-        return when (response.code()) {
-            401 -> GitHubSyncResult.Error(
-                ErrorType.UNAUTHORIZED,
-                serverMessage ?: "Invalid or expired token. Check Settings."
-            )
-            403 -> {
-                val remaining = response.headers()["X-RateLimit-Remaining"]
-                if (remaining == "0") {
-                    GitHubSyncResult.Error(ErrorType.RATE_LIMITED, "GitHub rate limit reached. Try again later.")
-                } else {
-                    GitHubSyncResult.Error(ErrorType.UNAUTHORIZED, serverMessage ?: "GitHub denied this request.")
-                }
-            }
-            else -> GitHubSyncResult.Error(
-                ErrorType.UNKNOWN,
-                serverMessage ?: "GitHub request failed (HTTP ${response.code()})."
-            )
+    private fun readNodeBytes(context: Context, node: FileNode): ByteArray {
+        val path = node.path
+        return if (path.startsWith("content://")) {
+            context.contentResolver.openInputStream(Uri.parse(path))?.use { it.readBytes() }
+                ?: throw IOException("Could not open '${node.name}'.")
+        } else {
+            File(path).readBytes()
         }
     }
 
-    private fun Throwable.toSyncError(): GitHubSyncResult.Error = when (this) {
-        is IOException -> GitHubSyncResult.Error(ErrorType.NETWORK, "Network error. Check your connection and try again.")
-        else -> GitHubSyncResult.Error(ErrorType.UNKNOWN, message ?: "Unexpected error during sync.")
+    private fun sha256Hex(bytes: ByteArray): String {
+        val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
+        return digest.joinToString("") { "%02x".format(it) }
+    }
+
+    /** Turns a failed Retrofit [Response] into a readable "<action>: <reason>" string. */
+    private fun describeError(action: String, response: Response<*>): String {
+        val reason = try {
+            val body = response.errorBody()?.string()
+            val parsed = body?.let { errorGson.fromJson(it, GitHubErrorResponse::class.java) }
+            parsed?.message ?: "HTTP ${response.code()}"
+        } catch (e: Exception) {
+            "HTTP ${response.code()}"
+        }
+        return if (action.isEmpty()) reason else "$action failed: $reason"
     }
 }
 

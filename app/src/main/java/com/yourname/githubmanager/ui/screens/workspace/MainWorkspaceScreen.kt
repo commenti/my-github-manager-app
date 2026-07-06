@@ -47,6 +47,16 @@ fun MainWorkspaceScreen(
         }
     }
 
+    // Show upload/commit success messages from ViewModel. Cleared right after
+    // showing so a screen rotation / recomposition doesn't replay the same
+    // Snackbar (clearSyncSuccessMessage() already exists on the ViewModel).
+    LaunchedEffect(uiState.syncSuccessMessage) {
+        uiState.syncSuccessMessage?.let { message ->
+            snackbarHostState.showSnackbar(message)
+            viewModel.clearSyncSuccessMessage()
+        }
+    }
+
     Scaffold(
         topBar = {
             TopAppBar(
@@ -119,6 +129,17 @@ fun MainWorkspaceScreen(
                 ) {
                     FileTreeItem(node = tree)
                 }
+
+                Spacer(Modifier.height(12.dp))
+
+                // Upload / Commit Changes section — only ever shown once a
+                // project is imported (we're inside fileTree?.let), driven
+                // entirely by uiState.uploadButtonState / isSyncing.
+                UploadSection(
+                    uiState = uiState,
+                    onUploadClick = { viewModel.onUploadClick(context) },
+                    onCommitChangesClick = { viewModel.onCommitChangesClick(context) }
+                )
             } ?: run {
                 // Empty state
                 Text(
@@ -126,6 +147,74 @@ fun MainWorkspaceScreen(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+            }
+        }
+    }
+}
+
+/**
+ * Renders whichever of Upload / Commit Changes / syncing state currently
+ * applies, based purely on [WorkspaceUiState.isSyncing] and
+ * [WorkspaceUiState.uploadButtonState]. Kept as its own composable so the
+ * three-way branching doesn't clutter [MainWorkspaceScreen].
+ */
+@Composable
+private fun UploadSection(
+    uiState: WorkspaceUiState,
+    onUploadClick: () -> Unit,
+    onCommitChangesClick: () -> Unit
+) {
+    if (uiState.isSyncing) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(8.dp))
+            Text("Syncing...")
+        }
+        return
+    }
+
+    when (val state = uiState.uploadButtonState) {
+        is UploadButtonState.NotUploaded -> {
+            Button(
+                onClick = onUploadClick,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Upload to GitHub")
+            }
+        }
+
+        is UploadButtonState.UploadedSameRepo -> {
+            Button(
+                onClick = onCommitChangesClick,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Commit Changes")
+            }
+        }
+
+        is UploadButtonState.UploadedDifferentRepo -> {
+            // Not currently produced by MainWorkspaceViewModel (sync state is
+            // now looked up by the repo in Settings, not by folder identity —
+            // see ProjectSyncStore), but handled here so this `when` stays
+            // exhaustive and the warning UI is ready if that ever changes.
+            Column(modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    text = "This project was previously linked to " +
+                        "${state.previousOwner}/${state.previousRepoName}.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.error
+                )
+                Spacer(Modifier.height(8.dp))
+                Button(
+                    onClick = onUploadClick,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Upload to GitHub")
+                }
             }
         }
     }

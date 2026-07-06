@@ -15,19 +15,20 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
 
 /**
- * Everything the app knows about one local project folder's last
- * successful sync to GitHub.
+ * Everything the app knows about one GitHub repo's last successful sync
+ * from this app.
  *
- * @param repoOwner     Owner the folder was last pushed to.
- * @param repoName      Repo the folder was last pushed to.
- * @param lastCommitSha The commit this folder's contents currently match.
+ * @param repoOwner     Owner this metadata was saved under.
+ * @param repoName      Repo this metadata was saved under.
+ * @param lastCommitSha The commit this repo's contents currently match.
  *                       Used as the `parents` entry for the next commit.
  * @param lastTreeSha   The tree of [lastCommitSha]. Used as `base_tree` so an
  *                       incremental commit only needs to send changed files.
  * @param fileHashes    Repo-relative path -> content hash (e.g. SHA-256),
  *                       as of [lastCommitSha]. Diffing current on-disk
  *                       hashes against this map is how "Commit Changes"
- *                       finds out what actually changed.
+ *                       finds out what actually changed (added, modified,
+ *                       or deleted).
  */
 @Serializable
 data class SyncMetadata(
@@ -40,38 +41,55 @@ data class SyncMetadata(
 
 /**
  * DataStore delegate — a dedicated "project_sync_store" Preferences DataStore,
- * separate from [AppPreferences] since this holds one entry per project
- * folder rather than a single global settings blob.
+ * separate from [AppPreferences] since this holds one entry per repo rather
+ * than a single global settings blob.
  */
 private val Context.syncDataStore by preferencesDataStore(name = "project_sync_store")
 
 /**
- * Tracks, per local project folder, whether it has ever been pushed to
- * GitHub and what its last-known synced state was.
+ * Tracks, per GitHub repo (owner + repoName + branch), whether this app has
+ * ever pushed to it and what the last-known synced state was.
  *
  * This is what MainWorkspaceViewModel consults to decide between showing
- * "Upload" (never synced, or synced to a *different* repo than the one
- * currently configured in Settings) vs "Commit Changes" (synced to the
- * same repo already).
+ * "Upload" (this repo has never been pushed to from this app) vs "Commit
+ * Changes" (this repo already has a saved sync record).
+ *
+ * IMPORTANT — keyed by REPO, not by local folder:
+ * Sync state is intentionally tied to the target repo (owner+repoName+branch),
+ * not to the local folder/URI that happens to be open in the workspace.
+ * Since Settings only ever configures one repo at a time, "has this repo been
+ * pushed to before?" is the question that actually matters. This also means
+ * re-importing the same project from a fresh zip (which lands in a brand-new,
+ * timestamped local folder every time) is correctly recognized as the same
+ * repo, so "Commit Changes" — not "Upload" — is offered. Use [repoKeyFor] to
+ * build the key so every caller derives it the same way.
  *
  * A plain singleton object (no DI), consistent with [AppPreferences] and
  * [SecureTokenStore]. Every function takes a [Context] (application
- * context recommended) and a `folderIdentifier` — a stable string that
- * uniquely identifies the local folder (e.g. its absolute path or a
- * persisted content:// URI string). Callers own the choice of identifier;
- * this store only needs it to be stable across app restarts for the
- * same folder.
+ * context recommended) and a `repoKey` — see [repoKeyFor].
  */
 object ProjectSyncStore {
 
     /**
-     * Preference keys can't safely contain arbitrary characters (folder
-     * paths can), so we hash the folder identifier down to a short, safe,
-     * collision-resistant key. SHA-256 rather than String.hashCode() to
-     * avoid 32-bit hash collisions across many projects.
+     * Builds the stable key sync state is tracked under for a given repo.
+     *
+     * Owner and repo name are lower-cased (GitHub treats them as
+     * case-insensitive, so "Owner/Repo" and "owner/repo" must resolve to the
+     * same sync record) and trimmed to absorb incidental whitespace from
+     * Settings text fields. Branch is kept case-sensitive, since Git branch
+     * names genuinely are.
      */
-    private fun keyFor(folderIdentifier: String) =
-        stringPreferencesKey("sync_${sha256(folderIdentifier)}")
+    fun repoKeyFor(owner: String, repoName: String, branch: String): String =
+        "${owner.trim().lowercase()}/${repoName.trim().lowercase()}/${branch.trim()}"
+
+    /**
+     * Preference keys can't safely contain arbitrary characters, so we hash
+     * the repo key down to a short, safe, collision-resistant key. SHA-256
+     * rather than String.hashCode() to avoid 32-bit hash collisions across
+     * many repos.
+     */
+    private fun keyFor(repoKey: String) =
+        stringPreferencesKey("sync_${sha256(repoKey)}")
 
     private fun sha256(input: String): String {
         val bytes = MessageDigest.getInstance("SHA-256").digest(input.toByteArray())
@@ -79,27 +97,27 @@ object ProjectSyncStore {
     }
 
     /**
-     * Returns the saved sync state for this folder, or null if it has
-     * never been synced (i.e. the "Upload" case).
+     * Returns the saved sync state for this repo, or null if this app has
+     * never pushed to it before (i.e. the "Upload" case).
      */
-    suspend fun getSyncMetadata(context: Context, folderIdentifier: String): SyncMetadata? {
+    suspend fun getSyncMetadata(context: Context, repoKey: String): SyncMetadata? {
         val raw = context.syncDataStore.data
-            .map { prefs -> prefs[keyFor(folderIdentifier)] }
+            .map { prefs -> prefs[keyFor(repoKey)] }
             .first()
         return raw?.let { runCatching { Json.decodeFromString<SyncMetadata>(it) }.getOrNull() }
     }
 
-    /** Observes this folder's sync state, emitting null if never synced. */
-    fun getSyncMetadataFlow(context: Context, folderIdentifier: String): Flow<SyncMetadata?> {
+    /** Observes this repo's sync state, emitting null if never synced. */
+    fun getSyncMetadataFlow(context: Context, repoKey: String): Flow<SyncMetadata?> {
         return context.syncDataStore.data.map { prefs ->
-            prefs[keyFor(folderIdentifier)]?.let { json ->
+            prefs[keyFor(repoKey)]?.let { json ->
                 runCatching { Json.decodeFromString<SyncMetadata>(json) }.getOrNull()
             }
         }
     }
 
     /**
-     * Overwrites this folder's sync state after a fully successful
+     * Overwrites this repo's sync state after a fully successful
      * upload/commit. Callers MUST only invoke this once every Git Data API
      * step (blob -> tree -> commit -> ref update) has succeeded — never
      * partially, so a failed push can't leave a stale/incorrect record
@@ -107,24 +125,24 @@ object ProjectSyncStore {
      */
     suspend fun saveSyncMetadata(
         context: Context,
-        folderIdentifier: String,
+        repoKey: String,
         metadata: SyncMetadata
     ) {
         val json = Json.encodeToString(metadata)
         context.syncDataStore.edit { prefs ->
-            prefs[keyFor(folderIdentifier)] = json
+            prefs[keyFor(repoKey)] = json
         }
     }
 
     /**
-     * Clears this folder's sync record, forcing "Upload" again next time.
-     * Useful if the user explicitly disconnects a folder from GitHub, or
-     * if a repo mismatch is detected and the user confirms they want to
-     * re-link to the new repo from scratch.
+     * Clears this repo's sync record, forcing "Upload" again next time.
+     * Useful if the user explicitly disconnects a repo, or wants to
+     * re-link it from scratch.
      */
-    suspend fun clearSyncMetadata(context: Context, folderIdentifier: String) {
+    suspend fun clearSyncMetadata(context: Context, repoKey: String) {
         context.syncDataStore.edit { prefs ->
-            prefs.remove(keyFor(folderIdentifier))
+            prefs.remove(keyFor(repoKey))
         }
     }
 }
+

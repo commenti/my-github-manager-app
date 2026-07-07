@@ -125,7 +125,8 @@ data class GetCommitResponse(
  */
 object GitHubApiClient {
 
-    private val gson: Gson by lazy { GsonBuilder().create() }
+    // ✅ यह है वो एक लाइन जो बदली है:
+    private val gson: Gson by lazy { GsonBuilder().serializeNulls().create() }
 
     private val okHttpClient: OkHttpClient by lazy {
         val logging = HttpLoggingInterceptor().apply {
@@ -154,4 +155,3 @@ object GitHubApiClient {
 
     fun create(): GitHubApiService = retrofit.create(GitHubApiService::class.java)
 }
-

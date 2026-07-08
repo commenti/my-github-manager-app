@@ -23,7 +23,8 @@ import kotlinx.coroutines.launch
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainWorkspaceScreen(
-    onSettingsClick: () -> Unit = {}
+    onSettingsClick: () -> Unit = {},
+    onFileClick: (FileNode) -> Unit = {}
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -127,7 +128,8 @@ fun MainWorkspaceScreen(
                         .weight(1f)
                         .verticalScroll(rememberScrollState())
                 ) {
-                    FileTreeItem(node = tree)
+                    // TODO: FileTreeItem.kt needs to be updated to accept onFileClick before this compiles.
+                    FileTreeItem(node = tree, onFileClick = onFileClick)
                 }
 
                 Spacer(Modifier.height(12.dp))

@@ -12,6 +12,7 @@ import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import com.yourname.githubmanager.data.filesystem.LocalFileSystem
 import com.yourname.githubmanager.data.filesystem.ProjectFileSystem
 import com.yourname.githubmanager.data.filesystem.SafFileSystem
 import com.yourname.githubmanager.domain.FileNode
@@ -56,7 +57,6 @@ fun AppNavigator() {
             )
         }
 
-        // Editor screen
         composable(
             route = Screen.Editor.route,
             arguments = listOf(
@@ -66,17 +66,18 @@ fun AppNavigator() {
             val filePath = backStackEntry.arguments?.getString("filePath") ?: return@composable
             val decodedPath = Uri.decode(filePath)
 
-            // TODO: Implement a proper shared repository/cache to resolve FileNode from path.
-            // Currently using a placeholder that returns a minimal dummy node.
+            // Placeholder resolution for now.
             val fileNode = resolveFileNode(decodedPath)
 
             val context = LocalContext.current
 
-            // TODO: Determine the correct ProjectFileSystem implementation based on project state.
-            // SafFileSystem is used as a sensible default for now.
-            val fileSystem: ProjectFileSystem = SafFileSystem(context)
+            val fileSystem: ProjectFileSystem =
+                if (decodedPath.startsWith("content://")) {
+                    SafFileSystem(context)
+                } else {
+                    LocalFileSystem()
+                }
 
-            // ViewModel factory because FileEditorViewModel requires constructor parameters
             val factory = object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -102,11 +103,8 @@ fun AppNavigator() {
  *
  * TODO: Replace this with a real implementation that retrieves the full
  * [FileNode] tree from a shared ViewModel or repository once available.
- * The implementation below creates a dummy leaf node and is only meant
- * to let the navigation compile and run temporarily.
  */
 private fun resolveFileNode(path: String): FileNode {
-    // Minimal dummy: assume it's a file, no children, no metadata.
     return FileNode(
         name = path.substringAfterLast('/'),
         path = path,

@@ -1,10 +1,11 @@
+// File: app/src/main/java/com/yourname/githubmanager/ui/screens/editor/FileEditorViewModel.kt
 package com.yourname.githubmanager.ui.screens.editor
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.yourname.githubmanager.data.filesystem.FileSystemException
 import com.yourname.githubmanager.data.filesystem.ProjectFileSystem
-import com.yourname.githubmanager.model.FileNode
+import com.yourname.githubmanager.domain.FileNode
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow

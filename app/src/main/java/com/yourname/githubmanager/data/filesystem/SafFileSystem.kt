@@ -1,3 +1,4 @@
+// File: app/src/main/java/com/yourname/githubmanager/data/filesystem/SafFileSystem.kt
 package com.yourname.githubmanager.data.filesystem
 
 import android.content.Context
@@ -9,28 +10,18 @@ import kotlinx.coroutines.withContext
 import java.io.FileNotFoundException
 import java.lang.SecurityException
 
-// TODO: Replace this sealed class with the existing error-handling pattern
-// from Phase 1-4 (e.g., if a common FileSystemException hierarchy already exists,
-// reuse it to maintain consistency).
-sealed class FileSystemException(message: String, cause: Throwable? = null) : Exception(message, cause) {
-    class PermissionDenied(message: String, cause: Throwable? = null) : FileSystemException(message, cause)
-    class FileNotFound(message: String, cause: Throwable? = null) : FileSystemException(message, cause)
-    class OperationFailed(message: String, cause: Throwable? = null) : FileSystemException(message, cause)
-}
-
 /**
  * SAF-based implementation of [ProjectFileSystem] for live device folders
  * imported via Storage Access Framework.
  *
- * Expects [FileNode.uri] to contain a valid content:// URI that can be
- * resolved with [DocumentFile.fromSingleUri]. All blocking I/O is performed
- * on [Dispatchers.IO].
+ * Expects [FileNode.path] to contain a valid content:// URI string that can
+ * be resolved with [DocumentFile.fromSingleUri]. All blocking I/O is
+ * performed on [Dispatchers.IO].
  */
 class SafFileSystem(private val context: Context) : ProjectFileSystem {
 
     private fun toDocumentFile(node: FileNode): DocumentFile? {
-        // Assumption: FileNode.uri is a non-null String holding a content URI.
-        val uri = Uri.parse(node.uri)
+        val uri = Uri.parse(node.path)
         return DocumentFile.fromSingleUri(context, uri)
     }
 
@@ -38,9 +29,9 @@ class SafFileSystem(private val context: Context) : ProjectFileSystem {
         try {
             val doc = toDocumentFile(node)
                 ?: throw FileSystemException.FileNotFound("Cannot resolve DocumentFile for node: ${node.name}")
-            context.contentResolver.openInputStream(doc.uri)?.bufferedReader().use { reader ->
-                reader?.readText() ?: throw FileSystemException.OperationFailed("Failed to read file: ${node.name}")
-            }
+            val stream = context.contentResolver.openInputStream(doc.uri)
+                ?: throw FileSystemException.OperationFailed("Failed to open input stream for: ${node.name}")
+            stream.bufferedReader().use { reader -> reader.readText() }
         } catch (e: SecurityException) {
             throw FileSystemException.PermissionDenied("Permission lost for file: ${node.name}", e)
         } catch (e: FileNotFoundException) {
@@ -80,13 +71,11 @@ class SafFileSystem(private val context: Context) : ProjectFileSystem {
             }
             val newDoc = parentDoc.createFile("text/plain", name)
                 ?: throw FileSystemException.OperationFailed("Could not create file: $name")
-            // Assumption: FileNode constructor accepts (name, uri, isDirectory, ...)
-            // Adjust fields to match the actual FileNode definition from Phase 1-4.
             FileNode(
                 name = name,
-                uri = newDoc.uri.toString(),
+                path = newDoc.uri.toString(),
                 isDirectory = false,
-                children = null // or emptyList() depending on the actual data class
+                children = null
             )
         } catch (e: SecurityException) {
             throw FileSystemException.PermissionDenied("Permission lost creating file: $name", e)
@@ -108,7 +97,7 @@ class SafFileSystem(private val context: Context) : ProjectFileSystem {
                 ?: throw FileSystemException.OperationFailed("Could not create folder: $name")
             FileNode(
                 name = name,
-                uri = newDoc.uri.toString(),
+                path = newDoc.uri.toString(),
                 isDirectory = true,
                 children = null
             )
@@ -143,13 +132,17 @@ class SafFileSystem(private val context: Context) : ProjectFileSystem {
             val doc = toDocumentFile(node)
                 ?: throw FileSystemException.FileNotFound("Cannot resolve DocumentFile for node: ${node.name}")
             // Same-folder rename only (no path/move, as per spec).
-            val renamedDoc = doc.renameTo(newName)
-                ?: throw FileSystemException.OperationFailed("Rename failed for: ${node.name}")
-            // Preserve original node attributes (isDirectory, children).
+            // Note: DocumentFile.renameTo() returns a Boolean, not a new DocumentFile.
+            // Some providers change the document's own uri as a side effect of renaming,
+            // so we re-read doc.uri afterwards rather than assuming it's unchanged.
+            val success = doc.renameTo(newName)
+            if (!success) {
+                throw FileSystemException.OperationFailed("Rename failed for: ${node.name}")
+            }
             FileNode(
                 name = newName,
-                uri = renamedDoc.uri.toString(),
-                isDirectory = node.isDirectory,  // assume node.isDirectory exists
+                path = doc.uri.toString(),
+                isDirectory = node.isDirectory,
                 children = node.children
             )
         } catch (e: SecurityException) {

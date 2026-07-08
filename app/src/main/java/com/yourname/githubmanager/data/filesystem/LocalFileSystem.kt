@@ -1,6 +1,6 @@
 package com.yourname.githubmanager.data.filesystem
 
-import com.yourname.githubmanager.model.FileNode
+import com.yourname.githubmanager.domain.FileNode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File

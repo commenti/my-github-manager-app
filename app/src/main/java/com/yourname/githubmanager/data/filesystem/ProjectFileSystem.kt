@@ -1,6 +1,6 @@
 package com.yourname.githubmanager.data.filesystem
 
-import com.yourname.githubmanager.model.FileNode // Assumption: FileNode is defined in this package; adjust if needed.
+import com.yourname.githubmanager.domain.FileNode
 
 /**
  * Storage-source-agnostic contract for file operations.

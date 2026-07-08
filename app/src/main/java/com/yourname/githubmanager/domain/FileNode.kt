@@ -10,18 +10,14 @@ package com.yourname.githubmanager.domain
  *  - an absolute java.io.File path (for [com.yourname.githubmanager.data.filesystem.LocalFileSystem]), or
  *  - a content:// URI string (for [com.yourname.githubmanager.data.filesystem.SafFileSystem])
  *
- * Keeping this as one field (rather than separate `path`/`uri` properties)
- * avoids the two filesystem implementations having to know about each
- * other's storage model — each just parses [path] the way it needs to.
- *
- * TODO: If Phase 1-4 already builds a file tree elsewhere (e.g. a tree-view
- * screen or repository) with a differently-shaped node, reconcile that
- * shape with this one rather than keeping two parallel models.
+ * [children] is non-nullable — leaf files simply have an empty list, so
+ * callers (e.g. [com.yourname.githubmanager.data.github.GitHubRepository]'s
+ * tree-flattening logic, [com.yourname.githubmanager.ui.components.FileTreeItem])
+ * can iterate it directly without null-checking.
  */
 data class FileNode(
     val name: String,
     val path: String,
-    val isDirectory: Boolean,
-    val children: List<FileNode>? = null
+    val isFolder: Boolean,
+    val children: List<FileNode> = emptyList()
 )
-

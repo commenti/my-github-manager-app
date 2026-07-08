@@ -44,7 +44,6 @@ fun AppNavigator() {
                     navController.navigate(Screen.Settings.route)
                 },
                 onFileClick = { node ->
-                    // TODO: Verify exact field name for full path; currently using node.path
                     val encodedPath = Uri.encode(node.path)
                     navController.navigate(Screen.Editor.createRoute(encodedPath))
                 }
@@ -111,7 +110,7 @@ private fun resolveFileNode(path: String): FileNode {
     return FileNode(
         name = path.substringAfterLast('/'),
         path = path,
-        isDirectory = false,
+        isFolder = false,
         children = emptyList()
     )
 }

@@ -74,8 +74,8 @@ class SafFileSystem(private val context: Context) : ProjectFileSystem {
             FileNode(
                 name = name,
                 path = newDoc.uri.toString(),
-                isDirectory = false,
-                children = null
+                isFolder = false,
+                children = emptyList()
             )
         } catch (e: SecurityException) {
             throw FileSystemException.PermissionDenied("Permission lost creating file: $name", e)
@@ -98,8 +98,8 @@ class SafFileSystem(private val context: Context) : ProjectFileSystem {
             FileNode(
                 name = name,
                 path = newDoc.uri.toString(),
-                isDirectory = true,
-                children = null
+                isFolder = true,
+                children = emptyList()
             )
         } catch (e: SecurityException) {
             throw FileSystemException.PermissionDenied("Permission lost creating folder: $name", e)
@@ -142,7 +142,7 @@ class SafFileSystem(private val context: Context) : ProjectFileSystem {
             FileNode(
                 name = newName,
                 path = doc.uri.toString(),
-                isDirectory = node.isDirectory,
+                isFolder = node.isFolder,
                 children = node.children
             )
         } catch (e: SecurityException) {

@@ -61,8 +61,8 @@ class LocalFileSystem : ProjectFileSystem {
             FileNode(
                 name = name,
                 path = newFile.absolutePath,
-                isDirectory = false,
-                children = null
+                isFolder = false,
+                children = emptyList()
             )
         } catch (e: SecurityException) {
             throw FileSystemException.PermissionDenied("Permission denied creating file: $name", e)
@@ -87,8 +87,8 @@ class LocalFileSystem : ProjectFileSystem {
             FileNode(
                 name = name,
                 path = newFolder.absolutePath,
-                isDirectory = true,
-                children = null
+                isFolder = true,
+                children = emptyList()
             )
         } catch (e: SecurityException) {
             throw FileSystemException.PermissionDenied("Permission denied creating folder: $name", e)
@@ -128,7 +128,7 @@ class LocalFileSystem : ProjectFileSystem {
             FileNode(
                 name = newName,
                 path = newFile.absolutePath,
-                isDirectory = node.isDirectory,
+                isFolder = node.isFolder,
                 children = node.children
             )
         } catch (e: SecurityException) {
@@ -140,3 +140,4 @@ class LocalFileSystem : ProjectFileSystem {
         }
     }
 }
+

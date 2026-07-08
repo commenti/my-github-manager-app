@@ -1,36 +1,23 @@
+// File: app/src/main/java/com/yourname/githubmanager/data/filesystem/LocalFileSystem.kt
 package com.yourname.githubmanager.data.filesystem
 
 import com.yourname.githubmanager.domain.FileNode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileNotFoundException
 import java.lang.SecurityException
-
-// TODO: Replace this sealed class with the existing error-handling pattern
-// from Phase 1-4 to remain consistent. (Currently duplicated from SafFileSystem.kt)
-sealed class FileSystemException(message: String, cause: Throwable? = null) : Exception(message, cause) {
-    class PermissionDenied(message: String, cause: Throwable? = null) : FileSystemException(message, cause)
-    class FileNotFound(message: String, cause: Throwable? = null) : FileSystemException(message, cause)
-    class OperationFailed(message: String, cause: Throwable? = null) : FileSystemException(message, cause)
-}
 
 /**
  * Plain java.io.File based implementation of [ProjectFileSystem] for extracted
  * zip content located inside the app's internal storage.
  *
- * Assumes [FileNode] provides an absolute file path (e.g., via a `path` property)
- * that points to a location within the app's internal files directory (as set up
- * by zip-extraction logic in Phase 1-4). If the actual field name differs, adjust
- * the `toFile()` helper accordingly.
+ * Uses [FileNode.path] as an absolute file path pointing to a location within
+ * the app's internal files directory (as set up by zip-extraction logic in
+ * Phase 1-4).
  */
 class LocalFileSystem : ProjectFileSystem {
 
-    private fun toFile(node: FileNode): File {
-        // Assumption: FileNode has a `path: String` property holding the absolute file path.
-        // If the field is named differently (e.g., `localPath`), change this line.
-        return File(node.path)
-    }
+    private fun toFile(node: FileNode): File = File(node.path)
 
     override suspend fun readText(node: FileNode): String = withContext(Dispatchers.IO) {
         try {
@@ -71,12 +58,11 @@ class LocalFileSystem : ProjectFileSystem {
             if (!created) {
                 throw FileSystemException.OperationFailed("Could not create file: $name (may already exist)")
             }
-            // Assumption: FileNode can be constructed with (name, path, isDirectory, children).
             FileNode(
                 name = name,
                 path = newFile.absolutePath,
                 isDirectory = false,
-                children = null // or emptyList()
+                children = null
             )
         } catch (e: SecurityException) {
             throw FileSystemException.PermissionDenied("Permission denied creating file: $name", e)
@@ -139,11 +125,10 @@ class LocalFileSystem : ProjectFileSystem {
             if (!success) {
                 throw FileSystemException.OperationFailed("Rename failed: ${file.name} -> $newName")
             }
-            // Preserve original isDirectory and children.
             FileNode(
                 name = newName,
                 path = newFile.absolutePath,
-                isDirectory = node.isDirectory, // assume node.isDirectory exists
+                isDirectory = node.isDirectory,
                 children = node.children
             )
         } catch (e: SecurityException) {

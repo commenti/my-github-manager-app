@@ -17,16 +17,27 @@ import com.yourname.githubmanager.domain.FileNode
 
 /**
  * A recursive Composable that displays a single file/folder node.
- * For folders, clicking toggles expansion and reveals children.
+ * For folders with children, clicking toggles expansion and reveals children.
+ * For files (or empty folders), clicking fires [onFileClick].
  *
  * @param node   The node to display.
  * @param depth  Current nesting level (used for indentation).
+ * @param onFileClick Called when a non‑expandable node (file / empty folder) is clicked.
+ * @param onNewFile (unused placeholder – will be wired in Batch 4).
+ * @param onNewFolder (unused placeholder).
+ * @param onRenameNode (unused placeholder).
+ * @param onDeleteNode (unused placeholder).
  * @param modifier Modifier applied to the root Column of this item.
  */
 @Composable
 fun FileTreeItem(
     node: FileNode,
     depth: Int = 0,
+    onFileClick: (FileNode) -> Unit = {},
+    onNewFile: (FileNode) -> Unit = {},
+    onNewFolder: (FileNode) -> Unit = {},
+    onRenameNode: (FileNode) -> Unit = {},
+    onDeleteNode: (FileNode) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     var expanded by remember { mutableStateOf(false) }
@@ -37,7 +48,13 @@ fun FileTreeItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .clickable(enabled = isExpandable) { expanded = !expanded }
+                .let {
+                    if (isExpandable) {
+                        it.clickable { expanded = !expanded }
+                    } else {
+                        it.clickable { onFileClick(node) }
+                    }
+                }
                 .padding(start = (depth * 16).dp, top = 4.dp, bottom = 4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -50,7 +67,7 @@ fun FileTreeItem(
                     modifier = Modifier.size(16.dp)
                 )
             } else {
-                // Placeholder to align non-expandable items with the icons
+                // Placeholder to align non‑expandable items with the icons
                 Spacer(modifier = Modifier.size(16.dp))
             }
 
@@ -73,7 +90,12 @@ fun FileTreeItem(
             node.children.forEach { child ->
                 FileTreeItem(
                     node = child,
-                    depth = depth + 1
+                    depth = depth + 1,
+                    onFileClick = onFileClick,
+                    onNewFile = onNewFile,
+                    onNewFolder = onNewFolder,
+                    onRenameNode = onRenameNode,
+                    onDeleteNode = onDeleteNode
                 )
             }
         }

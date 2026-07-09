@@ -57,6 +57,7 @@ fun AppNavigator() {
             )
         }
 
+        // Editor screen
         composable(
             route = Screen.Editor.route,
             arguments = listOf(
@@ -66,11 +67,23 @@ fun AppNavigator() {
             val filePath = backStackEntry.arguments?.getString("filePath") ?: return@composable
             val decodedPath = Uri.decode(filePath)
 
-            // Placeholder resolution for now.
+            // TODO: Implement a proper shared repository/cache to resolve the full
+            // FileNode (with real children/parent context) from the file-tree that
+            // MainWorkspaceViewModel already built, instead of rebuilding a leaf-only
+            // dummy node here. Fine for single-file editing (current scope) since
+            // ProjectFileSystem.readText/writeText only need name+path+isFolder.
             val fileNode = resolveFileNode(decodedPath)
 
             val context = LocalContext.current
 
+            // Source detection: FileNode doesn't carry a source flag (SAF vs local),
+            // so we infer it from the path's own shape — SAF-derived nodes always
+            // carry a content:// URI (see MainWorkspaceViewModel.documentFileToNode),
+            // while zip-extracted nodes carry a plain absolute file path (see
+            // MainWorkspaceViewModel.fileToNode). This was the actual cause of the
+            // "Permission lost" runtime error: SafFileSystem was previously hardcoded
+            // here regardless of source, so local (non-SAF) paths were wrongly parsed
+            // as content:// URIs.
             val fileSystem: ProjectFileSystem =
                 if (decodedPath.startsWith("content://")) {
                     SafFileSystem(context)
@@ -78,6 +91,7 @@ fun AppNavigator() {
                     LocalFileSystem()
                 }
 
+            // ViewModel factory because FileEditorViewModel requires constructor parameters
             val factory = object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
                 override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -103,8 +117,13 @@ fun AppNavigator() {
  *
  * TODO: Replace this with a real implementation that retrieves the full
  * [FileNode] tree from a shared ViewModel or repository once available.
+ * The implementation below creates a dummy leaf node and is only meant
+ * to let the navigation compile and run temporarily. It's sufficient for
+ * single-file editing (name + path + isFolder=false) but does not carry
+ * real children/parent context.
  */
 private fun resolveFileNode(path: String): FileNode {
+    // Minimal dummy: assume it's a file, no children, no metadata.
     return FileNode(
         name = path.substringAfterLast('/'),
         path = path,

@@ -5,19 +5,13 @@ import com.yourname.githubmanager.domain.FileNode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.lang.SecurityException
+import java.io.FileNotFoundException
 
-/**
- * Plain java.io.File based implementation of [ProjectFileSystem] for extracted
- * zip content located inside the app's internal storage.
- *
- * Uses [FileNode.path] as an absolute file path pointing to a location within
- * the app's internal files directory (as set up by zip-extraction logic in
- * Phase 1-4).
- */
 class LocalFileSystem : ProjectFileSystem {
 
-    private fun toFile(node: FileNode): File = File(node.path)
+    private fun toFile(node: FileNode): File {
+        return File(node.path)
+    }
 
     override suspend fun readText(node: FileNode): String = withContext(Dispatchers.IO) {
         try {
@@ -26,6 +20,8 @@ class LocalFileSystem : ProjectFileSystem {
             file.readText()
         } catch (e: SecurityException) {
             throw FileSystemException.PermissionDenied("Permission denied reading file: ${node.name}", e)
+        } catch (e: FileNotFoundException) {
+            throw FileSystemException.FileNotFound("File not found: ${node.name}", e)
         } catch (e: FileSystemException) {
             throw e
         } catch (e: Exception) {
@@ -125,6 +121,7 @@ class LocalFileSystem : ProjectFileSystem {
             if (!success) {
                 throw FileSystemException.OperationFailed("Rename failed: ${file.name} -> $newName")
             }
+            // Preserve original isFolder and children.
             FileNode(
                 name = newName,
                 path = newFile.absolutePath,
@@ -140,4 +137,3 @@ class LocalFileSystem : ProjectFileSystem {
         }
     }
 }
-

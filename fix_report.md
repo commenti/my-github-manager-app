@@ -1,0 +1,5 @@
+## BUG #1
+File: app/src/main/java/com/yourname/githubmanager/navigation/AppNavigator.kt
+Line: 69
+Confirmed cause: `Compose Navigation` automatically URL-decodes route arguments (jaise ki `filePath`). Jab `MainWorkspaceScreen` path ko `Uri.encode(node.path)` karke bhejta hai, toh navigation use receive karke automatically decode kar deta hai. Fir `AppNavigator.kt` mein `Uri.decode(filePath)` use ek aur baar decode karta hai (double-decoding). SAF URIs (Case B) mein document IDs encode hote hain (jaise `%3A` for `:` and `%2F` for `/`). Double-decoding inhe `:` aur `/` mein badal deta hai jisse URI corrupt ho jati hai. Jab `SafFileSystem` is corrupt URI ko open karne ki koshish karta hai, toh `ContentResolver` se `SecurityException` (Permission Denial) aata hai. Yahi kaaran hai ki error `Permission lost for file` aata hai. ZIP (Case A) local absolute path use karta hai jisme `%` nahi hota, par agar user SAF folder ke andar kisi file ko tap kare, toh yahi double-decoding error aata hai.
+Fix: <complete updated file>

@@ -66,7 +66,7 @@ fun AppNavigator() {
             )
         ) { backStackEntry ->
             val filePath = backStackEntry.arguments?.getString("filePath") ?: return@composable
-            val decodedPath = Uri.decode(filePath)
+            val decodedPath = filePath
 
             // TODO: Implement a proper shared repository/cache to resolve FileNode from path.
             // Currently using a placeholder that returns a minimal dummy node.

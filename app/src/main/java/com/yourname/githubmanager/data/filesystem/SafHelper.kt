@@ -1,3 +1,4 @@
+// File: app/src/main/java/com/yourname/githubmanager/data/filesystem/SafHelper.kt
 package com.yourname.githubmanager.data.filesystem
 
 import android.content.Context
@@ -102,12 +103,12 @@ fun rememberSafHelper(
 }
 
 /**
- * Persists read URI permission so the user isn't asked repeatedly.
+ * Persists read/write URI permission so the user isn't asked repeatedly.
  */
 fun persistUriPermission(context: Context, uri: Uri) {
     context.contentResolver.takePersistableUriPermission(
         uri,
-        Intent.FLAG_GRANT_READ_URI_PERMISSION
+        Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
     )
 }
 

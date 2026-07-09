@@ -27,38 +27,47 @@ class SafFileSystem(private val context: Context) : ProjectFileSystem {
 
     override suspend fun readText(node: FileNode): String = withContext(Dispatchers.IO) {
         try {
-            val doc = toDocumentFile(node)
-                ?: throw FileSystemException.FileNotFound("Cannot resolve DocumentFile for node: ${node.name}")
-            val stream = context.contentResolver.openInputStream(doc.uri)
-                ?: throw FileSystemException.OperationFailed("Failed to open input stream for: ${node.name}")
-            stream.bufferedReader().use { reader -> reader.readText() }
+            val uri = Uri.parse(node.path)
+            val stream = context.contentResolver.openInputStream(uri)
+                ?: throw FileSystemException.OperationFailed(
+                    "Failed to open input stream for: ${node.name}"
+                )
+            stream.bufferedReader().use { it.readText() }
         } catch (e: SecurityException) {
-            throw FileSystemException.PermissionDenied("Permission lost for file: ${node.name}", e)
+            throw FileSystemException.PermissionDenied(
+                "Permission lost for file: ${node.name}", e
+            )
         } catch (e: FileNotFoundException) {
-            throw FileSystemException.FileNotFound("File not found: ${node.name}", e)
+            throw FileSystemException.FileNotFound(
+                "File not found: ${node.name}", e
+            )
         } catch (e: FileSystemException) {
             throw e
         } catch (e: Exception) {
-            throw FileSystemException.OperationFailed("Error reading file: ${node.name}", e)
+            throw FileSystemException.OperationFailed(
+                "Error reading file: ${node.name}", e
+            )
         }
     }
 
     override suspend fun writeText(node: FileNode, content: String) = withContext(Dispatchers.IO) {
         try {
-            val doc = toDocumentFile(node)
-                ?: throw FileSystemException.FileNotFound("Cannot resolve DocumentFile for node: ${node.name}")
-            context.contentResolver.openOutputStream(doc.uri)?.bufferedWriter().use { writer ->
-                writer?.write(content)
-                writer?.flush()
-            } ?: throw FileSystemException.OperationFailed("Failed to open output stream for: ${node.name}")
+            val uri = Uri.parse(node.path)
+            val stream = context.contentResolver.openOutputStream(uri, "wt")
+                ?: throw FileSystemException.OperationFailed(
+                    "Failed to open output stream for: ${node.name}"
+                )
+            stream.bufferedWriter().use { it.write(content) }
         } catch (e: SecurityException) {
-            throw FileSystemException.PermissionDenied("Permission lost for file: ${node.name}", e)
-        } catch (e: FileNotFoundException) {
-            throw FileSystemException.FileNotFound("File not found: ${node.name}", e)
+            throw FileSystemException.PermissionDenied(
+                "Permission lost for file: ${node.name}", e
+            )
         } catch (e: FileSystemException) {
             throw e
         } catch (e: Exception) {
-            throw FileSystemException.OperationFailed("Error writing file: ${node.name}", e)
+            throw FileSystemException.OperationFailed(
+                "Error writing file: ${node.name}", e
+            )
         }
     }
 
